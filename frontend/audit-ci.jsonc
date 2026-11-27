@@ -1,0 +1,39 @@
+// =============================================================================
+// Auditoría de dependencias del frontend (la corre el job "security" del CI y
+// `make audit`):  npx audit-ci@7.1.0 --config audit-ci.jsonc
+//
+// Falla con CUALQUIER aviso moderate/high/critical de las dependencias de
+// producción, salvo los de esta lista. Cada excepción está revisada contra el
+// código: todas son de Angular 19 (exigido por el examen, ya sin soporte; se
+// corrigen solo en Angular 20+) y ninguna aplica a esta app porque:
+//   - es una SPA estática: NO usa SSR, hidratación ni HttpTransferCache;
+//   - NO usa i18n ($localize / atributos i18n);
+//   - NO tiene outlets con nombre en el router;
+//   - los host bindings solo tocan estilos y aria-*, nunca href/src/HTML;
+//   - formatDate siempre recibe formatos fijos (dd/MM/yyyy HH:mm);
+//   - el backend nunca emite la cookie XSRF-TOKEN (la defensa CSRF es
+//     SameSite=Strict + X-Requested-With + Bearer en memoria).
+// Detalle en docs/SEGURIDAD.md §8. Un aviso NUEVO hace fallar el pipeline.
+// =============================================================================
+{
+  "$schema": "https://github.com/IBM/audit-ci/raw/main/docs/schema.json",
+  "moderate": true,
+  "skip-dev": true,
+  "report-type": "summary",
+  "allowlist": [
+    // @angular/common
+    "GHSA-48r7-hpm6-gfxm", // DoS en formatDate con formatos arbitrarios → aquí los formatos son fijos
+    "GHSA-39pv-4j6c-2g6v", // HttpTransferCache (solo SSR) → no hay SSR
+    "GHSA-jhpw-976m-542j", // HttpTransferCache (solo SSR) → no hay SSR
+    "GHSA-p297-fm68-3q8c", // HttpTransferCache (solo SSR) → no hay SSR
+    "GHSA-jfgx-762w-99vr", // fuga del token XSRF-TOKEN → el backend no emite esa cookie
+    // @angular/compiler / @angular/core
+    "GHSA-58w9-8g37-x9v5", // two-way binding a propiedades sensibles → el único [( )] es [(value)] de un componente propio
+    "GHSA-jj27-h5hq-8x99", // XSS vía i18n → no se usa i18n
+    "GHSA-hh8m-fm6v-7cvg", // host bindings a href/src → solo hay bindings de estilo y aria-*
+    "GHSA-rgjc-h3x7-9mwg", // hidratación (solo SSR) → no hay SSR
+    // @angular/router
+    "GHSA-ff3f-86qr-9cv3", // DoS en SSR → no hay SSR
+    "GHSA-62vg-58rm-qff7"  // DoS con outlets con nombre vacíos → no hay outlets con nombre
+  ]
+}

@@ -89,7 +89,7 @@ const req = ({ name, method, path, body, query, description, status = 200, tests
 });
 
 const listQuery = (sorts) => [
-  q('search', '', 'Texto libre (código, nombre…)', true),
+  q('search', '', 'Buscador por prefijos: "cas" encuentra "Casco"; sin acentos; varias palabras deben coincidir todas ("casco 3m")', true),
   q('page', 1, 'Página'),
   q('per_page', 10, '5, 10, 25, 50 o 100'),
   q('sort', 'created_at', sorts),

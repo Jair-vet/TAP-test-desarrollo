@@ -18,7 +18,8 @@ Ten abiertos: el sistema, `/docs/` (Swagger), `/mail/` (Mailpit; entra por `/cor
 1. **Login como `consulta@tap.test`** → solo ve Productos y Usuarios, sin botones de editar/eliminar.
    Pega en la barra `/perfiles` → "Sin acceso" (guard) y en Swagger el 403 (servidor).
 2. **Login como `admin@tap.test`** → Inicio con contadores y actividad.
-3. **Productos**: busca "dielectricas" (sin acento) → encuentra "Botas dieléctricas"; ordena por precio;
+3. **Productos**: busca "dielec" (sin acento, solo el inicio) → encuentra "Botas dieléctricas"; prueba
+   "casco 3m" (las dos palabras deben coincidir); ordena por precio;
    crea uno con precio `1234` → no permite más de 3 dígitos; edita; descarga PDF y Excel.
 4. **Usuarios**: alta con foto (arrastrar), teléfono con código de país → abre `/mail/` y muestra el correo
    de bienvenida con la contraseña; detalle con perfiles.
@@ -34,8 +35,15 @@ Ten abiertos: el sistema, `/docs/` (Swagger), `/mail/` (Mailpit; entra por `/cor
 3. **Inyección NoSQL** en Postman: "Sesión → Login — intento de inyección NoSQL" → 400 (y "Productos → Buscar con operador NoSQL" → 400).
 4. DevTools → Application: no hay token en localStorage; la cookie `tap_rt` es HttpOnly.
 
-## 4. Calidad (2 min)
-- `make test` (o la pestaña Actions de GitHub): Pint PSR-12, Larastan nivel 6, 64 pruebas PHPUnit, ESLint,
+## 4. Rendimiento y escalabilidad (2 min)
+1. DevTools → Network → `/api/v1/products` → pestaña **Timing**: `Server-Timing` muestra el tiempo de Laravel,
+   el de MongoDB y cuántas consultas hizo.
+2. `docs/RENDIMIENTO.md` §6: tres problemas reales que encontraron las reglas automáticas (búsqueda con regex,
+   orden sin índice y el límite de peticiones que se aplicaba por IP) y cómo se corrigieron.
+3. `make test-perf`: k6 (0 % errores, p95 ≈ 13 ms) y Lighthouse (100 / 100 / 96).
+
+## 5. Calidad (2 min)
+- `make test` (o la pestaña Actions de GitHub): Pint PSR-12, Larastan nivel 6, 77 pruebas PHPUnit, ESLint,
   54 pruebas Jasmine, build y la colección de Postman con Newman (44 peticiones, 87 aserciones).
 - `ProductServiceTest`: pruebas del caso de uso **sin base de datos** gracias a los puertos.
 
@@ -57,6 +65,15 @@ HttpOnly/SameSite=Strict con rotación y detección de reúso. Un XSS no se llev
 
 **¿Cómo cierras sesión si el JWT es "stateless"?** Denylist del `jti` en Redis con TTL + `tokenVersion`
 por usuario para revocación masiva.
+
+**¿Por qué no Elasticsearch o Meilisearch para el buscador?** Para tablas de administración basta con buscar
+por inicio de palabra, y un índice invertido dentro de MongoDB da eso con un `IXSCAN`. Además se actualiza en
+la misma escritura: no hay un segundo sistema que sincronizar ni resultados atrasados. Si se necesitara
+tolerancia a errores de dedo o relevancia, se cambia solo el adaptador (RENDIMIENTO §4).
+
+**¿Cómo sabes que escala si hay pocos datos?** No se mide el tiempo con 40 registros, se mide el **plan**:
+`QueryPlanTest` revisa con el profiler de MongoDB que ninguna consulta recorra la colección ni ordene en
+memoria, y `RequestMetricsTest` que pedir 5 o 100 filas cueste las mismas consultas (sin N+1).
 
 **¿Cómo funciona la caché sin servir datos viejos?** Llaves con versión por namespace; cada escritura sube
 la versión (invalidación O(1)). Además ETag/304 en HTTP.

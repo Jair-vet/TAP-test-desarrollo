@@ -83,6 +83,16 @@
         },
         "platform": {
             "php": "8.2.36"
+        },
+        "audit": {
+            "ignore": {
+                "PKSA-3r5d-mb8f-1qw9": "GHSA-5vg9-5847-vvmq (CRLF en la regla email): mitigado con email:strict + not_regex de caracteres de control + Value Object Email. Ver docs/SEGURIDAD.md §8.",
+                "PKSA-mdq4-51ck-6kdq": "CVE-2026-48019: es el mismo aviso de CRLF que PKSA-3r5d-mb8f-1qw9, publicado por otra fuente. Mitigado igual.",
+                "PKSA-m5cs-t1y6-qpcs": "GHSA-crmm-hgp2-wgrp (signed URLs temporales): no se usan las signed URLs de Laravel; las fotos usan firma HMAC propia (MediaUrlSigner).",
+                "PKSA-d5tc-s1qs-h781": "GHSA-jh5r-qr3c-85q8 (XSS en la página de depuración): APP_DEBUG=false en todos los entornos.",
+                "PKSA-yxbx-3c9s-cjt9": "GHSA-63hm-g96r-2m2q (Concurrency::run): el facade Concurrency no se usa."
+            },
+            "abandoned": "fail"
         }
     },
     "minimum-stability": "stable",

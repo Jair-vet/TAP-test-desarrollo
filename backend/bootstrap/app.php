@@ -14,6 +14,7 @@ use Tap\Shared\Infrastructure\Http\ApiExceptionRenderer;
 use Tap\Shared\Infrastructure\Http\Middleware\AssignRequestId;
 use Tap\Shared\Infrastructure\Http\Middleware\ForceJsonResponse;
 use Tap\Shared\Infrastructure\Http\Middleware\HttpCacheHeaders;
+use Tap\Shared\Infrastructure\Http\Middleware\RecordRequestMetrics;
 use Tap\Shared\Infrastructure\Http\Middleware\RejectNoSqlOperators;
 
 return Application::configure(basePath: dirname(__DIR__))
@@ -30,9 +31,10 @@ return Application::configure(basePath: dirname(__DIR__))
             headers: Request::HEADER_X_FORWARDED_FOR | Request::HEADER_X_FORWARDED_PROTO | Request::HEADER_X_FORWARDED_HOST | Request::HEADER_X_FORWARDED_PORT,
         );
 
-        // Orden de ejecución en /api: id → JSON → anti-inyección NoSQL → cabeceras/ETag
+        // Orden de ejecución en /api: id → métricas → JSON → anti-inyección NoSQL → cabeceras/ETag
         $middleware->api(prepend: [
             AssignRequestId::class,
+            RecordRequestMetrics::class,
             ForceJsonResponse::class,
             RejectNoSqlOperators::class,
             HttpCacheHeaders::class,

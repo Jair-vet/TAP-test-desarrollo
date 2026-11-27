@@ -14,7 +14,7 @@
 | **Tipos BSON correctos** | `Decimal128` para dinero (sin errores de punto flotante), `Date` (UTC) para fechas, `ObjectId` para referencias |
 | **Esquema flexible donde aporta** | La bitácora guarda snapshots de entidades distintas (producto, usuario, perfil) en una sola colección |
 | **Esquema estricto donde importa** | Validadores `$jsonSchema` con `validationLevel: strict` en todas las colecciones de negocio |
-| **Índices para cada patrón de consulta** | Únicos (código, correo, nombre de perfil), orden por fecha con desempate por `_id`, multikey en `profile_ids`, TTL en sesiones |
+| **Índices para cada patrón de consulta** | Únicos (código, correo, nombre de perfil), uno por cada orden de cada tabla (`{campo, _id}`), multikey en `profile_ids` y en el buscador (`search_tokens`), TTL en sesiones. Regla automática: **0 COLLSCAN** (`QueryPlanTest`) |
 | **Atomicidad sin transacciones** | Códigos consecutivos con `findOneAndUpdate` + `$inc` (operación atómica de un documento) |
 | **Mínimo privilegio** | La API usa el usuario `tap_app` (`readWrite` + `dbAdmin` solo sobre la BD `tap`), nunca root |
 
@@ -32,15 +32,17 @@ Código: adaptadores en `backend/src/*/Infrastructure/Persistence/Mongo*Reposito
   "name": "Casco de seguridad clase E",
   "brand": "3M",
   "price": { "$numberDecimal": "289.90" },
-  "search": "prd-000001 casco de seguridad clase e 3m",
+  "search_tokens": ["p", "pr", "prd", "0", "00", "…", "000001", "c", "ca", "cas", "casc", "casco", "…", "3", "3m"],
   "created_at": "2026-11-15T07:20:38.542Z",
   "updated_at": "2026-11-15T07:20:38.542Z"
 }
 ```
 - `price` en **Decimal128**: 999.99 se guarda exacto; se ordena numéricamente.
-- `search`: texto normalizado (minúsculas y **sin acentos**) → buscar "dielectricas" encuentra "dieléctricas".
+- `search_tokens`: **buscador**. Prefijos normalizados (minúsculas, **sin acentos**) de código, nombre y marca, con
+  índice multikey: buscar "dielec" encuentra "dieléctricas" con un `IXSCAN`. Ver `docs/RENDIMIENTO.md` §4.
 - Validador: `code` con patrón `^PRD-[0-9]{6,}$`, `name`/`brand` obligatorios con longitud, `price` tipo `decimal`.
-- Índices: `code` **único**, `{created_at:-1, _id:-1}`, `name`, `price`, `brand` (uno por columna ordenable).
+- Índices: `code` **único**, `{created_at:-1, _id:-1}`, `{name, _id}`, `{price, _id}`, `{brand, _id}` (uno por columna
+  ordenable, igual al orden real) y `search_tokens` (buscador).
 
 ### `users`
 ```json
@@ -72,7 +74,7 @@ Código: adaptadores en `backend/src/*/Infrastructure/Persistence/Mongo*Reposito
 - `phone` en formato **E.164** (validado por patrón también en el `$jsonSchema`).
 - Los **listados usan proyección** que excluye `security` y `two_factor`: los hashes no salen de Mongo si no
   hacen falta.
-- Índices: `email` **único**, `code` **único**, `profile_ids`, `{created_at:-1,_id:-1}`, `name`.
+- Índices: `email` **único**, `code` **único**, `profile_ids`, `{created_at:-1,_id:-1}`, `{name, _id}`, `search_tokens`.
 
 ### `profiles`
 ```json
@@ -90,7 +92,8 @@ Código: adaptadores en `backend/src/*/Infrastructure/Persistence/Mongo*Reposito
 }
 ```
 - `sections[]` **embebido**: el detalle del perfil y el cálculo de permisos son una sola lectura.
-- `name_key` (nombre en minúsculas) con índice **único** → "Almacén" y "almacén" no pueden coexistir.
+- `name_key` (nombre en minúsculas) con índice **único** → "Almacén" y "almacén" no pueden coexistir; también
+  sirve para ordenar por nombre sin importar mayúsculas. Buscador: `search_tokens` (código y nombre).
 - Validador: `sections` con `minItems: 1`, `section` y `actions` restringidos con `enum`.
 
 ### `audit_logs` (bitácora, solo inserción)
@@ -114,7 +117,7 @@ Código: adaptadores en `backend/src/*/Infrastructure/Persistence/Mongo*Reposito
   trae la diferencia campo por campo (calculada por `Audit/Domain/ChangeSet.php`).
 - `actor` **embebido** (copia): la bitácora debe mostrar quién lo hizo aunque ese usuario se borre después.
 - Índices: `{created_at:-1,_id:-1}`, `{entity_type, entity_id, created_at:-1}` (historial de un registro),
-  `{event, created_at:-1}` (filtros).
+  `{event, created_at:-1}` (filtros), `{event, _id}` y `{entity_type, _id}` (orden) y `search_tokens` (buscador).
 
 ### `refresh_tokens`
 ```json
@@ -142,7 +145,9 @@ Código: adaptadores en `backend/src/*/Infrastructure/Persistence/Mongo*Reposito
 | Pantalla / operación | Consulta | Índice que la sirve |
 |---|---|---|
 | Tabla de productos ordenada por fecha | `find().sort({created_at:-1,_id:-1}).skip().limit()` | `created_desc` |
-| Ordenar por precio/nombre/marca | `sort({price:1,_id:1})` | `price` / `name` / `brand` |
+| Ordenar por precio/nombre/marca | `sort({price:1,_id:1})` | `price_sort` / `name_sort` / `brand_sort` |
+| Ordenar por código o correo (únicos) | `sort({code:1})` | `uniq_code` / `uniq_email` |
+| Buscar "casco 3m" | `find({search_tokens: {$all: ["casco","3m"]}})` + `countDocuments` igual | `search_tokens` (multikey) |
 | Ver/editar por código | `findOne({code})` | `uniq_code` |
 | Login | `findOne({email})` | `uniq_email` |
 | ¿Perfil en uso? | `countDocuments({profile_ids: id})` | `profile_ids` (multikey) |
@@ -157,7 +162,7 @@ Código: adaptadores en `backend/src/*/Infrastructure/Persistence/Mongo*Reposito
 - Escrituras con `w: majority` y `retryWrites: true` (`config/database.php`).
 
 ## 5. Si el sistema crece
-- Búsqueda: índice de texto o Atlas Search (cambio solo en el adaptador Mongo).
+- Búsqueda con tolerancia a errores de dedo o relevancia: Atlas Search o Meilisearch (cambio solo en el adaptador Mongo).
 - Paginación por cursor (`_id > último`) en lugar de `skip` para millones de filas.
 - Bitácora: colección *time series* o TTL de retención (p. ej. 1 año) y *sharding* por `entity_type`.
 - Cambiar a DynamoDB/Firestore: implementar los mismos puertos (`ProductRepository`, etc.); el dominio no cambia.

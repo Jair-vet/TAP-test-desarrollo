@@ -1,6 +1,6 @@
 # Atajos del proyecto. Todo corre en Docker: no necesitas PHP, Composer ni Node.
 # Cada atajo llama a un script de scripts/ (sirven igual sin `make`, p. ej. en Windows).
-.PHONY: help setup up down restart logs ps public public-status unpublish credentials test test-back test-front test-api ci seed reset shell mongo
+.PHONY: help setup up down restart logs ps public public-status unpublish credentials test test-back test-front test-api test-perf audit ci seed reset shell mongo
 
 help: ## Lista los comandos
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  \033[33m%-12s\033[0m %s\n", $$1, $$2}'
@@ -40,10 +40,16 @@ test: test-back test-front test-api ## Corre todas las pruebas (backend, fronten
 test-api: ## Colección de Postman contra el sistema levantado (Newman en Docker)  (= ./scripts/test-api.sh)
 	@./scripts/test-api.sh
 
-ci: ## Pipeline completo como en GitHub Actions: imágenes + lint + análisis + pruebas + API
+test-perf: ## Presupuestos de rendimiento: carga con k6 (API) + Lighthouse (frontend)  (= ./scripts/test-perf.sh)
+	@./scripts/test-perf.sh
+
+audit: ## Auditoría de dependencias (composer audit + audit-ci)  (= ./scripts/test-security.sh)
+	@./scripts/test-security.sh
+
+ci: ## Pipeline completo como en GitHub Actions: imágenes + calidad + pruebas + API + rendimiento + auditoría
 	docker compose build
 	docker compose up -d --wait
-	$(MAKE) test-back test-front test-api
+	$(MAKE) test-back test-front test-api test-perf audit
 	@echo "✔ CI local completo"
 
 test-back: ## PSR-12 (Pint) + análisis estático (Larastan) + PHPUnit  (= ./scripts/test-back.sh)

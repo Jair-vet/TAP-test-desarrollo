@@ -1030,7 +1030,7 @@ components:
       in: query
       name: search
       schema: {type: string, maxLength: 80}
-      description: Texto libre (se escapa; no se aceptan expresiones regulares ni operadores)
+      description: 'Buscador por prefijos: cada palabra debe ser inicio de alguna palabra del registro (código, nombre, marca, correo…). Sin acentos ni mayúsculas; varias palabras = todas deben coincidir ("casco 3m"). Usa un índice (search_tokens); no acepta expresiones regulares ni operadores.'
     Page:
       in: query
       name: page

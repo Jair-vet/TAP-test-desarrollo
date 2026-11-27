@@ -101,10 +101,10 @@ sequenceDiagram
 
 | Colección | Documento (resumen) | Índices | Notas NoSQL |
 |---|---|---|---|
-| `products` | `code, name, brand, price(Decimal128), search, created_at, updated_at` | `code` único, `created_at`, `name`, `price`, `brand` | Precio exacto con **Decimal128** (no float) |
-| `users` | `code, name, email, phone, photo_path, profile_ids[ObjectId], security{…}, two_factor{…}` | `email` único, `code` único, `profile_ids` (multikey) | **Referencias** a perfiles (se comparten) + subdocumentos **embebidos** de seguridad |
-| `profiles` | `code, name, name_key, description, sections[{section, actions[]}]` | `code` único, `name_key` único | Secciones **embebidas**: se leen siempre con el perfil |
-| `audit_logs` | `event, entity_type, entity_id, actor{…}, before{}, after{}, changes[], ip, created_at` | `created_at`, `(entity_type, entity_id, created_at)`, `event` | Esquema flexible: snapshots de entidades distintas en una sola colección |
+| `products` | `code, name, brand, price(Decimal128), search_tokens[], created_at, updated_at` | `code` único, `created_at`, `{name,_id}`, `{price,_id}`, `{brand,_id}`, `search_tokens` (multikey) | Precio exacto con **Decimal128** (no float) |
+| `users` | `code, name, email, phone, photo_path, profile_ids[ObjectId], security{…}, two_factor{…}, search_tokens[]` | `email` único, `code` único, `{name,_id}`, `profile_ids` y `search_tokens` (multikey) | **Referencias** a perfiles (se comparten) + subdocumentos **embebidos** de seguridad |
+| `profiles` | `code, name, name_key, description, sections[{section, actions[]}], search_tokens[]` | `code` único, `name_key` único, `search_tokens` | Secciones **embebidas**: se leen siempre con el perfil |
+| `audit_logs` | `event, entity_type, entity_id, actor{…}, before{}, after{}, changes[], ip, search_tokens[], created_at` | `created_at`, `(entity_type, entity_id, created_at)`, `event`, `{event,_id}`, `{entity_type,_id}`, `search_tokens` | Esquema flexible: snapshots de entidades distintas en una sola colección |
 | `refresh_tokens` | `user_id, family_id, token_hash, expires_at, revoked_at, replaced_by` | `token_hash` único, **TTL** en `expires_at` | Mongo borra solos los vencidos |
 | `counters` | `{_id: 'products', seq: 38}` | — | `$inc` atómico → códigos consecutivos sin colisiones |
 
@@ -113,8 +113,10 @@ sequenceDiagram
   formados aunque alguien escriba directo a la BD.
 - **Usuario de mínimo privilegio**: la API se conecta como `tap_app` (`readWrite` + `dbAdmin` solo sobre
   la BD `tap`), nunca como root (`docker/mongo/init-app-user.js`).
-- **Búsqueda**: campo `search` normalizado (minúsculas, sin acentos) + regex **escapada**.
-  Para millones de registros: índice de texto o Atlas Search (cambio solo en el adaptador).
+- **Buscador**: índice invertido de prefijos (`search_tokens`, minúsculas y sin acentos) con índice multikey: cada
+  búsqueda es un `IXSCAN`, sin expresiones regulares. Detalle y límites en [RENDIMIENTO.md](RENDIMIENTO.md) §4.
+- **Regla de escalabilidad**: ninguna consulta de la API puede hacer COLLSCAN ni ordenar en memoria
+  (`tests/Feature/QueryPlanTest.php`, con el profiler de MongoDB).
 
 ## 5. Rendimiento y caché
 
@@ -129,6 +131,7 @@ sequenceDiagram
 | Exportación | Excel en **streaming** (OpenSpout, memoria constante); PDF con subconjunto de fuentes (~30 KB) | `TabularFileExporter.php` |
 | Frontend | Lazy loading por ruta, `OnPush` + signals, búsqueda con `debounceTime(300)` + `switchMap` (cancela peticiones viejas), caché en memoria de catálogos, esqueletos de carga | `shared/utils/list-controller.ts` |
 | Colas | Correos en cola Redis (worker separado): la petición HTTP no espera al SMTP | servicio `worker` |
+| Métricas | Cabecera `Server-Timing` (tiempo total, tiempo en MongoDB y número de consultas) + log de peticiones lentas y de posibles N+1. Presupuestos automáticos con k6 y Lighthouse: ver [RENDIMIENTO.md](RENDIMIENTO.md) | `RecordRequestMetrics.php`, `MongoCommandMetrics.php`, `perf/` |
 
 ## 6. Frontend (Angular 19)
 

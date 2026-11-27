@@ -4,7 +4,10 @@
 # =============================================================================
 
 # ---- 1) Build de Angular -------------------------------------------------
-FROM node:22.23.5-alpine3.23 AS build
+# --platform=$BUILDPLATFORM: el resultado son archivos estáticos (iguales en
+# cualquier arquitectura), así que se compila nativo aunque la imagen final sea
+# arm64. Evita emular Node con QEMU en la CD multi-arquitectura.
+FROM --platform=$BUILDPLATFORM node:22.23.5-alpine3.23 AS build
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
@@ -12,7 +15,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---- 2) Swagger UI (estático, sin CDN) -----------------------------------
-FROM node:22.23.5-alpine3.23 AS swagger
+FROM --platform=$BUILDPLATFORM node:22.23.5-alpine3.23 AS swagger
 WORKDIR /sw
 RUN --mount=type=cache,target=/root/.npm npm install --no-audit --no-fund swagger-ui-dist@5.36.0
 

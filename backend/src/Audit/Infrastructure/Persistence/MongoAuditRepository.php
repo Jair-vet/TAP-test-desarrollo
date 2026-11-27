@@ -51,7 +51,7 @@ final class MongoAuditRepository implements AuditRepository
             'meta' => $entry->meta === [] ? (object) [] : $entry->meta,
             'ip' => $entry->ip,
             'user_agent' => $entry->userAgent,
-            'search' => Mongo::searchable(
+            'search_tokens' => Mongo::searchTokens(
                 (string) $entry->entityCode,
                 $entry->actor['name'],
                 (string) $entry->actor['email'],
@@ -79,7 +79,7 @@ final class MongoAuditRepository implements AuditRepository
             'skip' => $window['skip'],
             'limit' => $window['limit'],
             // El listado no necesita los snapshots completos (pueden ser grandes)
-            'projection' => ['before' => 0, 'after' => 0, 'search' => 0, 'user_agent' => 0],
+            'projection' => ['before' => 0, 'after' => 0, 'search_tokens' => 0, 'user_agent' => 0],
             'typeMap' => self::typeMap(),
         ]) as $doc) {
             $items[] = $this->hydrate($doc);
@@ -94,7 +94,7 @@ final class MongoAuditRepository implements AuditRepository
     {
         foreach ($this->collection->find($this->filter($query), [
             'sort' => Mongo::sort($query, self::SORTABLE),
-            'projection' => ['before' => 0, 'after' => 0, 'search' => 0],
+            'projection' => ['before' => 0, 'after' => 0, 'search_tokens' => 0],
             'typeMap' => self::typeMap(),
             'batchSize' => 500,
         ]) as $doc) {
@@ -115,7 +115,7 @@ final class MongoAuditRepository implements AuditRepository
         foreach ($this->collection->find($filter, [
             'sort' => ['created_at' => -1, '_id' => -1],
             'limit' => $limit,
-            'projection' => ['before' => 0, 'after' => 0, 'search' => 0],
+            'projection' => ['before' => 0, 'after' => 0, 'search_tokens' => 0],
             'typeMap' => self::typeMap(),
         ]) as $doc) {
             $items[] = $this->hydrate($doc);
