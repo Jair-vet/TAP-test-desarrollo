@@ -66,7 +66,8 @@ final class MongoProductRepository implements ProductRepository
                 'name' => $product->name(),
                 'brand' => $product->brand(),
                 'price' => new Decimal128($product->price()->amount()),
-                'search' => Mongo::searchable($product->code()->value(), $product->name(), $product->brand()),
+                // Motor de búsqueda: prefijos de código, nombre y marca (índice multikey)
+                'search_tokens' => Mongo::searchTokens($product->code()->value(), $product->name(), $product->brand()),
                 'created_at' => Mongo::date($product->createdAt()),
                 'updated_at' => Mongo::date($product->updatedAt()),
             ],
@@ -85,11 +86,11 @@ final class MongoProductRepository implements ProductRepository
         $window = Mongo::window($query);
 
         $docs = $this->collection->find($filter, [
-            'sort' => Mongo::sort($query, self::SORTABLE),
+            'sort' => Mongo::sort($query, self::SORTABLE, unique: ['code']),
             'skip' => $window['skip'],
             'limit' => $window['limit'],
             // Proyección: solo lo que se usa (menos datos desde Mongo)
-            'projection' => ['search' => 0],
+            'projection' => ['search_tokens' => 0],
             'typeMap' => $this->typeMap(),
         ]);
 
@@ -106,8 +107,8 @@ final class MongoProductRepository implements ProductRepository
     public function cursor(ListQuery $query): iterable
     {
         $docs = $this->collection->find(Mongo::searchFilter($query->search), [
-            'sort' => Mongo::sort($query, self::SORTABLE),
-            'projection' => ['search' => 0],
+            'sort' => Mongo::sort($query, self::SORTABLE, unique: ['code']),
+            'projection' => ['search_tokens' => 0],
             'typeMap' => $this->typeMap(),
             'batchSize' => 500,
         ]);

@@ -41,7 +41,7 @@ final class MongoUserRepository implements UserRepository
         'created_at' => 'created_at',
     ];
 
-    private const LIST_PROJECTION = ['search' => 0, 'security' => 0, 'two_factor' => 0];
+    private const LIST_PROJECTION = ['search_tokens' => 0, 'security' => 0, 'two_factor' => 0];
 
     private Collection $collection;
 
@@ -91,7 +91,7 @@ final class MongoUserRepository implements UserRepository
             'phone' => $user->phone()?->value(),
             'photo_path' => $user->photoPath(),
             'profile_ids' => Mongo::objectIds($user->profileIds()),
-            'search' => Mongo::searchable($user->code()->value(), $user->name(), $user->email()->value()),
+            'search_tokens' => Mongo::searchTokens($user->code()->value(), $user->name(), $user->email()->value()),
             'security' => [
                 'password_hash' => $user->passwordHash(),
                 'must_change_password' => $user->mustChangePassword(),
@@ -130,7 +130,7 @@ final class MongoUserRepository implements UserRepository
 
         $items = [];
         foreach ($this->collection->find($filter, [
-            'sort' => Mongo::sort($query, self::SORTABLE),
+            'sort' => Mongo::sort($query, self::SORTABLE, unique: ['code', 'email']),
             'skip' => $window['skip'],
             'limit' => $window['limit'],
             'projection' => self::LIST_PROJECTION,
@@ -147,7 +147,7 @@ final class MongoUserRepository implements UserRepository
     public function cursor(ListQuery $query): iterable
     {
         foreach ($this->collection->find(Mongo::searchFilter($query->search), [
-            'sort' => Mongo::sort($query, self::SORTABLE),
+            'sort' => Mongo::sort($query, self::SORTABLE, unique: ['code', 'email']),
             'projection' => self::LIST_PROJECTION,
             'typeMap' => self::typeMap(),
             'batchSize' => 500,

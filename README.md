@@ -64,10 +64,14 @@ Para apagar: `make down` (conserva los datos). Para empezar de cero: `make reset
 
 | Quiero revisar… | Comando o lugar | Qué debe pasar |
 |---|---|---|
-| Todo el pipeline, como en GitHub Actions | `make ci` | Construye imágenes, levanta el stack y corre backend + frontend + Postman. Termina con `✔ CI local completo` |
-| Backend: PSR-12 + análisis estático + pruebas | `make test-back` | Pint sin cambios, Larastan `[OK] No errors`, PHPUnit **64 pruebas (460 aserciones) en verde** |
+| Todo el pipeline, como en GitHub Actions | `make ci` | Construye imágenes, levanta el stack y corre backend, frontend, Postman, rendimiento y auditoría. Termina con `✔ CI local completo` |
+| Backend: PSR-12 + análisis estático + pruebas | `make test-back` | Pint sin cambios, Larastan `[OK] No errors`, PHPUnit **77 pruebas (1 188 aserciones) en verde**, incluidas las reglas de escalabilidad (0 COLLSCAN, sin N+1, límite por usuario) |
 | Frontend: convenciones Angular + pruebas + build | `make test-front` | ESLint `All files pass linting`, Karma **54 pruebas en verde**, build de producción |
 | API documentada en Postman (automático) | `make test-api` | Newman corre la colección: **44 peticiones, 87 aserciones, 0 fallos**; reporte en `reports/newman.xml` |
+| Rendimiento (presupuestos) | `make test-perf` | k6: **0 % errores, p95 ≈ 13 ms** (presupuesto 300 ms) · Lighthouse: **100 rendimiento, 100 accesibilidad, 96 buenas prácticas**. Ver [docs/RENDIMIENTO.md](docs/RENDIMIENTO.md) |
+| Dependencias | `make audit` | `composer audit` y `audit-ci` sin avisos nuevos (los de Laravel 11 / Angular 19 están revisados y justificados) |
+| Buscador | Cualquier tabla → escribe `dielec`, `casco 3m` o un código | Encuentra por inicio de palabra, sin acentos ni mayúsculas, usando un índice (ver [RENDIMIENTO.md §4](docs/RENDIMIENTO.md)) |
+| Métricas de cada petición | DevTools → Network → una petición a `/api/v1/…` → **Timing** | Cabecera `Server-Timing`: tiempo total, tiempo en MongoDB y número de consultas |
 | API en Postman (a mano) | Importa la colección y el entorno de `docs/postman/`, escribe `password` en el entorno y ejecuta *Sesión → Login* | Cada petición trae ejemplo de respuesta y su prueba en la pestaña *Tests* |
 | API en Swagger | http://localhost:8080/docs/ → *Authorize* con el token del login | Cada endpoint lista sus respuestas posibles (200/201/204/400/401/403/404/409/422/429) con ejemplos |
 | Modelo NoSQL | `make mongo` y luego `db.getCollectionInfos()`, `db.products.getIndexes()` | Colecciones con validador `$jsonSchema` e índices únicos/TTL; ver [docs/MODELO-DATOS.md](docs/MODELO-DATOS.md) |
@@ -90,8 +94,10 @@ Guion de la demostración: [docs/DEMO.md](docs/DEMO.md).
 | `make test-back` | `./scripts/test-back.sh` | Pint (PSR-12) + Larastan nivel 6 + PHPUnit |
 | `make test-front` | `./scripts/test-front.sh` | ESLint + Karma/Jasmine + build de producción |
 | `make test-api` | `./scripts/test-api.sh` | Colección de Postman con Newman contra el sistema levantado |
-| `make test` | los tres scripts anteriores | Todas las pruebas |
-| `make ci` | — | Pipeline completo (igual que GitHub Actions) |
+| `make test-perf` | `./scripts/test-perf.sh` | Presupuestos de rendimiento: carga con k6 + Lighthouse |
+| `make audit` | `./scripts/test-security.sh` | Auditoría de dependencias (composer audit + audit-ci) |
+| `make test` | `test-back` + `test-front` + `test-api` | Todas las pruebas |
+| `make ci` | — | Pipeline completo (igual que GitHub Actions): imágenes + pruebas + rendimiento + auditoría |
 | `make seed` | `docker compose exec api php artisan db:seed --force` | Vuelve a sembrar los datos demo (idempotente) |
 | `make mongo` | ver Makefile | Consola de MongoDB con el usuario de la app (mínimo privilegio) |
 | `make shell` | `docker compose exec api sh` | Terminal dentro del contenedor de la API |
@@ -122,7 +128,8 @@ Guion de la demostración: [docs/DEMO.md](docs/DEMO.md).
 | Accesos solo a secciones del perfil | Backend: middleware `permission:{sección},{acción}` · Frontend: guards + `*appCan` |
 | Cifrado de contraseñas y validaciones | **Argon2id** · FormRequests + Value Objects del dominio + validación en Angular |
 | Bitácora (información anterior vs actual) | Colección `audit_logs` con `before`/`after`/`changes` · pantalla **Bitácora** con comparación |
-| Extras: CI/CD y pruebas | GitHub Actions: CI (`ci.yml`, 5 jobs) + CD (`cd.yml`, imágenes en ghcr.io) · **64 PHPUnit** + **54 Jasmine** + **87 aserciones Postman** ([CI-CD.md](docs/CI-CD.md)) |
+| Extras: CI/CD y pruebas | GitHub Actions: CI (`ci.yml`, 5 jobs) + CD (`cd.yml`, imágenes multi-arquitectura en ghcr.io) · **77 PHPUnit** + **54 Jasmine** + **87 aserciones Postman** + k6 + Lighthouse ([CI-CD.md](docs/CI-CD.md)) |
+| Extras: buscador y rendimiento | Motor de búsqueda por prefijos con índice en MongoDB · métricas `Server-Timing` · reglas de escalabilidad y presupuestos automáticos ([RENDIMIENTO.md](docs/RENDIMIENTO.md)) |
 | URL del sistema funcionando | http://localhost:8080 (servidor local, permitido por el examen); opcional `make public` para una URL HTTPS temporal |
 
 > **Nota de versiones.** El examen dice "TypeScript 5.0": Angular 19 no compila con TS 5.0 (requiere
@@ -142,6 +149,7 @@ Guion de la demostración: [docs/DEMO.md](docs/DEMO.md).
 | [docs/SEGURIDAD.md](docs/SEGURIDAD.md) | Contraseñas, JWT + 2FA, inyección NoSQL, OWASP, mitigaciones de Laravel 11 |
 | [docs/API.md](docs/API.md) | Endpoints, permisos, códigos de error y ejemplos `curl` |
 | [docs/CI-CD.md](docs/CI-CD.md) | Pipeline de GitHub Actions, su equivalente local y qué cubre cada prueba |
+| [docs/RENDIMIENTO.md](docs/RENDIMIENTO.md) | Buscador, métricas, reglas de escalabilidad, presupuestos (k6, Lighthouse) y cómo escalar |
 | [docs/DEMO.md](docs/DEMO.md) | Guion de la demostración en vivo (10-15 min) y preguntas probables |
 | [docs/DESPLIEGUE.md](docs/DESPLIEGUE.md) | Docker en detalle, túnel de Cloudflare y solución de problemas |
 | [docs/HOSTING.md](docs/HOSTING.md) | *(Opcional, no se usa)* cómo publicarlo en un servidor propio |
@@ -156,7 +164,8 @@ prueba-de-desarrollo/
 ├── frontend/           Angular 19 (core / shared / layout / features; *.spec.ts = Jasmine)
 ├── docker/             Dockerfiles de api (PHP-FPM) y web (Nginx + Angular + Swagger), init de Mongo
 ├── docs/               Guías, openapi.yaml y postman/ (colección, entorno, foto de ejemplo, generador)
-├── scripts/            setup, credenciales, pruebas (test-back/front/api) y túnel público
+├── scripts/            setup, credenciales, pruebas (test-back/front/api/perf/security) y túnel público
+├── perf/               presupuestos de rendimiento: k6 (carga de la API) y Lighthouse (frontend)
 ├── deploy/             (Opcional, no se usa) kit para un servidor propio
 ├── .github/workflows/  CI (ci.yml) y CD (cd.yml)
 ├── docker-compose.yml  web · api · worker · mongo · redis · mailpit · tunnel (opcional)

@@ -49,6 +49,7 @@ use Tap\Shared\Application\Port\TabularExporter;
 use Tap\Shared\Infrastructure\Cache\VersionedQueryCache;
 use Tap\Shared\Infrastructure\Clock\SystemClock;
 use Tap\Shared\Infrastructure\Export\TabularFileExporter;
+use Tap\Shared\Infrastructure\Observability\MongoCommandMetrics;
 use Tap\Shared\Infrastructure\Persistence\Mongo\MongoSequenceGenerator;
 use Tap\Support\Infrastructure\Http\MailboxPass;
 
@@ -103,6 +104,8 @@ final class HexagonalServiceProvider extends ServiceProvider
             return $connection;
         });
         $this->app->singleton(AuditService::class);
+        // Métricas de MongoDB por petición (una instancia por proceso, se reinicia en cada petición)
+        $this->app->singleton(MongoCommandMetrics::class);
 
         $this->app->singleton(SecurityPolicy::class, static fn (): SecurityPolicy => new SecurityPolicy(
             maxLoginAttempts: (int) config('security.login.max_attempts'),

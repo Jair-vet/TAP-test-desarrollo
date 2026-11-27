@@ -23,7 +23,8 @@ use Tap\Shared\Infrastructure\Persistence\Mongo\Mongo;
  */
 final class MongoProfileRepository implements ProfileRepository
 {
-    private const SORTABLE = ['code' => 'code', 'name' => 'name', 'created_at' => 'created_at'];
+    // "name" se ordena por name_key (minúsculas, índice único): orden alfabético sin importar mayúsculas
+    private const SORTABLE = ['code' => 'code', 'name' => 'name_key', 'created_at' => 'created_at'];
 
     private Collection $collection;
 
@@ -52,7 +53,7 @@ final class MongoProfileRepository implements ProfileRepository
         }
 
         $items = [];
-        foreach ($this->collection->find(['_id' => ['$in' => $objectIds]], ['sort' => ['name' => 1], 'typeMap' => self::typeMap()]) as $doc) {
+        foreach ($this->collection->find(['_id' => ['$in' => $objectIds]], ['sort' => ['name_key' => 1], 'typeMap' => self::typeMap()]) as $doc) {
             $items[] = $this->hydrate($doc);
         }
 
@@ -68,7 +69,7 @@ final class MongoProfileRepository implements ProfileRepository
             'name_key' => mb_strtolower($profile->name()),
             'description' => $profile->description(),
             'sections' => array_map(static fn (SectionAccess $a): array => $a->toArray(), $profile->sections()),
-            'search' => Mongo::searchable($profile->code()->value(), $profile->name()),
+            'search_tokens' => Mongo::searchTokens($profile->code()->value(), $profile->name()),
             'created_at' => Mongo::date($profile->createdAt()),
             'updated_at' => Mongo::date($profile->updatedAt()),
         ], ['upsert' => true]);
@@ -96,10 +97,10 @@ final class MongoProfileRepository implements ProfileRepository
 
         $items = [];
         foreach ($this->collection->find($filter, [
-            'sort' => Mongo::sort($query, self::SORTABLE),
+            'sort' => Mongo::sort($query, self::SORTABLE, unique: ['code', 'name_key']),
             'skip' => $window['skip'],
             'limit' => $window['limit'],
-            'projection' => ['search' => 0, 'name_key' => 0],
+            'projection' => ['search_tokens' => 0, 'name_key' => 0],
             'typeMap' => self::typeMap(),
         ]) as $doc) {
             $items[] = $this->hydrate($doc);
@@ -113,8 +114,8 @@ final class MongoProfileRepository implements ProfileRepository
     public function cursor(ListQuery $query): iterable
     {
         foreach ($this->collection->find(Mongo::searchFilter($query->search), [
-            'sort' => Mongo::sort($query, self::SORTABLE),
-            'projection' => ['search' => 0, 'name_key' => 0],
+            'sort' => Mongo::sort($query, self::SORTABLE, unique: ['code', 'name_key']),
+            'projection' => ['search_tokens' => 0, 'name_key' => 0],
             'typeMap' => self::typeMap(),
         ]) as $doc) {
             yield $this->hydrate($doc);
@@ -124,7 +125,7 @@ final class MongoProfileRepository implements ProfileRepository
     public function all(): array
     {
         $items = [];
-        foreach ($this->collection->find([], ['sort' => ['name' => 1], 'typeMap' => self::typeMap()]) as $doc) {
+        foreach ($this->collection->find([], ['sort' => ['name_key' => 1], 'typeMap' => self::typeMap()]) as $doc) {
             $items[] = $this->hydrate($doc);
         }
 

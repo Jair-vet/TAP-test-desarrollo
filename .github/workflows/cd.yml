@@ -4,16 +4,17 @@
 #  Se dispara SOLO cuando el workflow "CI" terminó en verde sobre main, o al
 #  publicar un tag v*. Así nunca se publica una imagen que no pasó las pruebas.
 #
-#   1. Construye las imágenes api (PHP-FPM) y web (Nginx + Angular) para
-#      linux/amd64 y linux/arm64 (Intel, AMD, Apple Silicon, Graviton/Ampere).
-#   2. Las publica en GitHub Container Registry:
-#        ghcr.io/<dueño>/tap-prueba-api:<sha|latest|vX.Y.Z>
-#        ghcr.io/<dueño>/tap-prueba-web:<sha|latest|vX.Y.Z>
-#      con SBOM y procedencia (supply-chain).
-#   3. Con tag v*: crea un GitHub Release con openapi.yaml y la colección de Postman.
+#   1. build: construye las imágenes api (PHP-FPM) y web (Nginx + Angular) para
+#      linux/amd64 y linux/arm64, cada una en un runner NATIVO de su arquitectura
+#      (ubuntu-latest y ubuntu-24.04-arm): sin emulación QEMU, mismo tiempo que
+#      un build normal. Cada build sube su imagen por digest, con SBOM y procedencia.
+#   2. merge: une los dos digests en una sola imagen multi-arquitectura:
+#        ghcr.io/<dueño>/tap-prueba-api:<sha|latest|X.Y.Z>
+#        ghcr.io/<dueño>/tap-prueba-web:<sha|latest|X.Y.Z>
+#   3. release: con tag v*, crea un GitHub Release con openapi.yaml y Postman.
 #
-# Para usar las imágenes publicadas en cualquier equipo con Docker basta con
-# cambiar `build:` por `image: ghcr.io/...` en docker-compose.yml (ver docs/CI-CD.md).
+# Para usar las imágenes publicadas basta con cambiar `build:` por
+# `image: ghcr.io/...` en docker-compose.yml (ver docs/CI-CD.md).
 # =============================================================================
 name: CD
 
@@ -30,29 +31,38 @@ permissions:
   packages: write    # publicar en ghcr.io (incluye SBOM y procedencia de buildx)
 
 concurrency:
-  group: cd-${{ github.ref }}
+  group: cd-${{ github.event.workflow_run.head_branch || github.ref }}
   cancel-in-progress: false
 
 jobs:
-  images:
-    name: Publicar imágenes (${{ matrix.name }})
+  build:
+    name: Build ${{ matrix.image }} (${{ matrix.platform }})
     if: github.event_name == 'push' || github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     strategy:
+      fail-fast: false
       matrix:
-        include:
-          - name: api
-            dockerfile: docker/php/Dockerfile
-            target: prod
-          - name: web
-            dockerfile: docker/nginx/Dockerfile
-            target: ''
+        image: [api, web]
+        platform: [linux/amd64, linux/arm64]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - name: Nombres (ghcr.io exige minúsculas)
+        id: names
+        env:
+          IMAGE: ${{ matrix.image }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/tap-prueba-${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "pair=${PLATFORM//\//-}" >> "$GITHUB_OUTPUT"
+          if [ "$IMAGE" = api ]; then
+            echo "dockerfile=docker/php/Dockerfile" >> "$GITHUB_OUTPUT"; echo "target=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "dockerfile=docker/nginx/Dockerfile" >> "$GITHUB_OUTPUT"; echo "target=" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
@@ -64,31 +74,91 @@ jobs:
       - id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: ghcr.io/${{ github.repository_owner }}/tap-prueba-${{ matrix.name }}
-          tags: |
-            type=sha,prefix=,format=short
-            type=raw,value=latest,enable=${{ github.event_name == 'workflow_run' }}
-            type=semver,pattern={{version}}
+          images: ${{ steps.names.outputs.image }}
 
       - id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
-          target: ${{ matrix.target }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          file: ${{ steps.names.outputs.dockerfile }}
+          target: ${{ steps.names.outputs.target }}
+          platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ steps.names.outputs.image }},push-by-digest=true,name-canonical=true,push=true
           sbom: true
           provenance: mode=max
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ steps.names.outputs.pair }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ steps.names.outputs.pair }}
+
+      - name: Guardar el digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digests-${{ matrix.image }}-${{ steps.names.outputs.pair }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Publicar ${{ matrix.image }} (amd64 + arm64)
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [api, web]
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ matrix.image }}-*
+          merge-multiple: true
+
+      - id: names
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/tap-prueba-${IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.names.outputs.image }}
+          tags: |
+            type=sha,prefix=,format=short
+            type=raw,value=latest,enable=${{ github.event_name == 'workflow_run' }}
+            type=semver,pattern={{version}}
+
+      - name: Crear la imagen multi-arquitectura
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IMAGE: ${{ steps.names.outputs.image }}
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE}@sha256:%s " *)
+
+      - name: Verificar
+        env:
+          IMAGE: ${{ steps.names.outputs.image }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect "${IMAGE}:${VERSION}"
 
   release:
     name: GitHub Release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: images
+    needs: merge
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -97,9 +167,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
           gh release create "$TAG" \
             docs/openapi.yaml \
             docs/postman/TAP-Prueba.postman_collection.json \
             docs/postman/TAP-Local.postman_environment.json \
             --title "Prueba técnica TAP $TAG" \
-            --notes "Imágenes: ghcr.io/${GITHUB_REPOSITORY_OWNER}/tap-prueba-api:${TAG#v} y tap-prueba-web:${TAG#v}. Ver README.md para levantar el sistema con Docker."
+            --notes "Imágenes: ghcr.io/${OWNER}/tap-prueba-api:${TAG#v} y ghcr.io/${OWNER}/tap-prueba-web:${TAG#v}. Ver README.md para levantar el sistema con Docker."

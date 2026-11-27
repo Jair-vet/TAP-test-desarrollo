@@ -117,6 +117,24 @@ Crear `DynamoProductRepository implements ProductRepository` (y los demás repos
 `Infrastructure/Persistence/` y cambiar las líneas correspondientes en `HexagonalServiceProvider::$singletons`.
 Dominio, casos de uso, controladores y frontend **no cambian**. Las pruebas unitarias siguen pasando.
 
+### …hacer buscable un campo nuevo (ej. "descripción" en productos)
+Agrégalo a `Mongo::searchTokens(...)` en `MongoProductRepository::save()`. Para que los documentos existentes
+también lo tengan, crea una migración que recalcule `search_tokens` (como
+`2026_11_27_000001_search_engine_and_scalable_indexes.php`). El motor está en
+`Shared/Infrastructure/Persistence/Mongo/Mongo.php` (`searchTokens()` / `searchFilter()`); explicación en
+`docs/RENDIMIENTO.md` §4.
+
+### …agregar una columna ordenable o un filtro nuevo
+1. Agrégala a `sortable()` del `*ListRequest` y al `SORTABLE` del repositorio Mongo.
+2. Crea su índice `{campo: 1, _id: 1}` en una migración nueva (o usa el índice único si el campo es único y
+   pásalo en `unique:` de `Mongo::sort()`).
+3. Corre `make test-back`: `QueryPlanTest` falla si la consulta nueva no tiene índice.
+
+### …revisar por qué una pantalla está lenta
+DevTools → Network → la petición → **Timing**: la cabecera `Server-Timing` separa el tiempo de Laravel y el de
+MongoDB (con número de consultas). En `make logs` aparecen las advertencias `Petición lenta` y `posible N+1`.
+Umbrales en `config/performance.php` (`PERF_*`).
+
 ### …cambiar la duración de la sesión o los intentos de login
 `.env` → `JWT_ACCESS_TTL` (s), `REFRESH_TTL` (s), `LOGIN_MAX_ATTEMPTS`, `LOGIN_LOCKOUT_MINUTES` y
 `docker compose up -d api`. Valores por defecto en `config/security.php`.
@@ -149,7 +167,10 @@ El toast muestra `Referencia: <request_id>`; búscalo con `docker compose logs a
 ## 3. Comandos útiles
 
 ```bash
-make test          # todo: Pint + Larastan + PHPUnit + ESLint + Karma + build
+make test          # Pint + Larastan + PHPUnit + ESLint + Karma + build + Postman (Newman)
+make test-perf     # presupuestos de rendimiento: k6 (API) + Lighthouse (frontend)
+make audit         # auditoría de dependencias (composer audit + audit-ci)
+make ci            # todo lo anterior, igual que GitHub Actions
 make logs          # logs en vivo
 make mongo         # consola de MongoDB con el usuario de la app
 make shell         # shell en el contenedor de la API

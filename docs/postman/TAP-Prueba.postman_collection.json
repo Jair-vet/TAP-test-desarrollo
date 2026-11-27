@@ -1092,7 +1092,7 @@
                 {
                   "key": "search",
                   "value": "",
-                  "description": "Texto libre (código, nombre…)",
+                  "description": "Buscador por prefijos: \"cas\" encuentra \"Casco\"; sin acentos; varias palabras deben coincidir todas (\"casco 3m\")",
                   "disabled": true
                 },
                 {
@@ -1687,7 +1687,7 @@
                 {
                   "key": "search",
                   "value": "",
-                  "description": "Texto libre (código, nombre…)",
+                  "description": "Buscador por prefijos: \"cas\" encuentra \"Casco\"; sin acentos; varias palabras deben coincidir todas (\"casco 3m\")",
                   "disabled": true
                 },
                 {
@@ -2119,7 +2119,7 @@
                 {
                   "key": "search",
                   "value": "",
-                  "description": "Texto libre (código, nombre…)",
+                  "description": "Buscador por prefijos: \"cas\" encuentra \"Casco\"; sin acentos; varias palabras deben coincidir todas (\"casco 3m\")",
                   "disabled": true
                 },
                 {

@@ -32,6 +32,25 @@ final class ProductApiTest extends ApiTestCase
         $this->withToken($token)->getJson("/api/v1/products/{$id}")->assertNotFound();
     }
 
+    public function test_buscador_por_prefijos_sin_acentos_y_con_varias_palabras(): void
+    {
+        $this->admin();
+        $token = $this->tokenFor('admin@tap.test');
+        foreach ([['Botas dieléctricas', 'Truper', 899], ['Casco clase E', '3M', 289.9], ['Casco ligero', 'MSA', 310]] as [$name, $brand, $price]) {
+            $this->withToken($token)->postJson('/api/v1/products', ['name' => $name, 'brand' => $brand, 'price' => $price])->assertCreated();
+        }
+
+        $total = fn (string $q): int => (int) $this->withToken($token)->getJson('/api/v1/products?search=' . urlencode($q))->assertOk()->json('meta.total');
+
+        self::assertSame(1, $total('dielec'), 'prefijo y sin acento');
+        self::assertSame(1, $total('DIELÉCTRICAS'), 'mayúsculas y con acento');
+        self::assertSame(2, $total('cas'), 'prefijo de "casco"');
+        self::assertSame(1, $total('casco 3m'), 'todas las palabras deben coincidir');
+        self::assertSame(0, $total('casco truper'));
+        self::assertSame(1, $total('PRD-000002'), 'por código');
+        self::assertSame(1, $total('msa'), 'por marca');
+    }
+
     public function test_validaciones_del_examen(): void
     {
         $this->admin();

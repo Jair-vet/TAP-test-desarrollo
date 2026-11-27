@@ -59,6 +59,18 @@ fuente `docs/openapi.yaml`). Colección Postman: `docs/postman/`.
   "errors": { "price": ["…"] }, "request_id": "8f0c…" }
 ```
 
+### Búsqueda, orden y paginación
+- `search`: buscador por **inicio de palabra**, sin acentos ni mayúsculas (`dielec` → "Botas dieléctricas");
+  varias palabras deben coincidir todas (`casco 3m`). Siempre usa un índice. Ver `docs/RENDIMIENTO.md` §4.
+- `sort` (lista blanca por recurso) + `direction` (`asc`/`desc`); `page` y `per_page` (5, 10, 25, 50 o 100).
+
+### Cabeceras útiles en cada respuesta
+| Cabecera | Para qué |
+|---|---|
+| `X-Request-Id` | Referencia para buscar el error en los logs (`make logs`) |
+| `Server-Timing` | Métrica de rendimiento: `app;dur=…` (total), `db;dur=…;desc="MongoDB: N consulta(s)"` |
+| `ETag` | Con `If-None-Match` responde `304` sin cuerpo si los datos no cambiaron |
+
 ## Códigos de error
 
 | HTTP | `code` | Significado |

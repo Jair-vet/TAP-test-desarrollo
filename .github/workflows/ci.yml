@@ -4,8 +4,10 @@
 #  backend   PSR-12 (Pint) · Larastan nivel 6 · PHPUnit (unitarias + API contra MongoDB)
 #  frontend  ESLint · Karma/Jasmine (Chrome headless) · build de producción
 #  docker    construye las imágenes api y web (valida los Dockerfile)
-#  e2e       levanta TODO el stack con Docker y corre la colección de Postman (Newman)
-#  security  composer audit + npm audit (informativo: ver docs/SEGURIDAD.md)
+#  e2e       levanta TODO el stack con Docker, corre la colección de Postman (Newman)
+#            y los presupuestos de rendimiento: carga con k6 + Lighthouse CI
+#  security  composer audit + audit-ci (npm): falla con cualquier aviso NUEVO;
+#            las excepciones revisadas están documentadas (docs/SEGURIDAD.md §8)
 #
 # Si todo pasa en main, el workflow CD (cd.yml) publica las imágenes.
 # Equivalente local de todo este pipeline: `make ci`.
@@ -17,7 +19,7 @@ name: CI
 
 on:
   push:
-    branches: [main, develop, 'feature/**']
+    branches: [main, develop, 'feature/**', 'fix/**']
   pull_request:
 
 permissions:
@@ -114,7 +116,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   e2e:
-    name: API de extremo a extremo (Docker + Postman/Newman)
+    name: Extremo a extremo y rendimiento (Newman · k6 · Lighthouse)
     runs-on: ubuntu-latest
     needs: [backend, frontend]
     steps:
@@ -123,22 +125,25 @@ jobs:
         run: ./scripts/setup.sh
       - name: Colección de Postman contra el sistema real
         run: ./scripts/test-api.sh
+      - name: Presupuestos de rendimiento (k6 en la API + Lighthouse en el frontend)
+        run: ./scripts/test-perf.sh
       - name: Logs si algo falla
         if: failure()
         run: docker compose logs --tail 120 api web worker
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: newman-report
-          path: reports/newman.xml
+          name: reportes-e2e-y-rendimiento
+          path: reports/
           if-no-files-found: ignore
 
   security:
     name: Auditoría de dependencias
     runs-on: ubuntu-latest
-    # Informativo: Laravel 11 (exigido por el examen) ya no recibe parches y
-    # tiene advisories abiertos que se mitigan en código (docs/SEGURIDAD.md).
-    continue-on-error: true
+    # Laravel 11 y Angular 19 (exigidos por el examen) ya no reciben parches. Los
+    # avisos conocidos se revisaron uno por uno y quedaron como excepciones con su
+    # justificación (backend/composer.json → config.audit.ignore y
+    # frontend/audit-ci.jsonc). Cualquier aviso NUEVO hace fallar este job.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: shivammathur/setup-php@4424c9aab975b57bd706ee5a39c6b4334d6e4f60 # 2.40.0
@@ -146,10 +151,12 @@ jobs:
           php-version: '8.2'
           extensions: mongodb-2.5.8
           tools: composer:v2
-      - run: composer audit --locked --no-interaction
+      - name: Auditoría Composer (avisos conocidos documentados en composer.json)
+        run: composer audit --locked --no-interaction
         working-directory: backend
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
-      - run: npm audit --omit=dev --audit-level=high
+      - name: Auditoría npm (dependencias de producción, nivel moderate o mayor)
+        run: npx --yes audit-ci@7.1.0 --config audit-ci.jsonc
         working-directory: frontend
