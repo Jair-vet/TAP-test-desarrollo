@@ -1,0 +1,155 @@
+# =============================================================================
+# CI — se ejecuta en cada push y pull request.
+#
+#  backend   PSR-12 (Pint) · Larastan nivel 6 · PHPUnit (unitarias + API contra MongoDB)
+#  frontend  ESLint · Karma/Jasmine (Chrome headless) · build de producción
+#  docker    construye las imágenes api y web (valida los Dockerfile)
+#  e2e       levanta TODO el stack con Docker y corre la colección de Postman (Newman)
+#  security  composer audit + npm audit (informativo: ver docs/SEGURIDAD.md)
+#
+# Si todo pasa en main, el workflow CD (cd.yml) publica las imágenes.
+# Equivalente local de todo este pipeline: `make ci`.
+#
+# Las acciones están fijadas por SHA (no por tag) para evitar ataques de
+# cadena de suministro si alguien mueve un tag.
+# =============================================================================
+name: CI
+
+on:
+  push:
+    branches: [main, develop, 'feature/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (Laravel 11 · PHP 8.2)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      mongo:
+        image: mongo:8.0
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok'"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      MONGODB_URI: mongodb://127.0.0.1:27017
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: shivammathur/setup-php@4424c9aab975b57bd706ee5a39c6b4334d6e4f60 # 2.40.0
+        with:
+          php-version: '8.2'
+          extensions: mongodb-2.5.8, redis, gd, intl, zip, sodium, bcmath
+          coverage: none
+          tools: composer:v2
+
+      - name: Instalar dependencias
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Estilo PSR-12 (Pint)
+        run: vendor/bin/pint --test
+
+      - name: Análisis estático (Larastan nivel 6)
+        run: vendor/bin/phpstan analyse --no-progress --memory-limit=1G
+
+      - name: Pruebas (PHPUnit)
+        run: vendor/bin/phpunit --testdox
+
+  frontend:
+    name: Frontend (Angular 19)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+      - name: ESLint (convenciones de Angular)
+        run: npm run lint
+      - name: Pruebas unitarias (Chrome headless)
+        run: npm run test:ci
+      - name: Build de producción
+        run: npm run build
+
+  docker:
+    name: Imágenes Docker
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Imagen api (prod)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/php/Dockerfile
+          target: prod
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Imagen web
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/nginx/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  e2e:
+    name: API de extremo a extremo (Docker + Postman/Newman)
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Levantar el stack (secretos aleatorios, mismo script que en local)
+        run: ./scripts/setup.sh
+      - name: Colección de Postman contra el sistema real
+        run: ./scripts/test-api.sh
+      - name: Logs si algo falla
+        if: failure()
+        run: docker compose logs --tail 120 api web worker
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: newman-report
+          path: reports/newman.xml
+          if-no-files-found: ignore
+
+  security:
+    name: Auditoría de dependencias
+    runs-on: ubuntu-latest
+    # Informativo: Laravel 11 (exigido por el examen) ya no recibe parches y
+    # tiene advisories abiertos que se mitigan en código (docs/SEGURIDAD.md).
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: shivammathur/setup-php@4424c9aab975b57bd706ee5a39c6b4334d6e4f60 # 2.40.0
+        with:
+          php-version: '8.2'
+          extensions: mongodb-2.5.8
+          tools: composer:v2
+      - run: composer audit --locked --no-interaction
+        working-directory: backend
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: frontend

@@ -1,0 +1,182 @@
+# =============================================================================
+#  Prueba técnica TAP — stack completo en Docker (no requiere PHP ni Node local)
+#
+#   make setup     → genera .env con secretos aleatorios, construye y levanta
+#   make public    → abre un túnel HTTPS de Cloudflare y muestra la URL pública
+#
+#   web      Nginx: Angular + gateway /api + Swagger (/docs) + Mailpit (/mail)
+#   api      Laravel 11 / PHP 8.2-FPM (arquitectura hexagonal)
+#   worker   Cola de Laravel (envío de correos)
+#   mongo    MongoDB 8 (validación $jsonSchema + índices)
+#   redis    Caché, colas, rate limiting, revocación de JWT
+#   mailpit  Bandeja de correo de pruebas
+#   tunnel   cloudflared (perfil "public", opcional)
+# =============================================================================
+name: tap-prueba
+
+x-php: &php
+  build:
+    context: .
+    dockerfile: docker/php/Dockerfile
+    target: prod
+  image: tap-prueba/api:latest
+  restart: unless-stopped
+  # Solo las variables que la API necesita (no recibe la contraseña root de Mongo)
+  environment: &php-env
+    APP_ENV: production
+    APP_DEBUG: "false"
+    APP_KEY: ${APP_KEY:?Ejecuta make setup}
+    APP_URL: ${APP_URL:-http://localhost:8080}
+    FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
+    APP_DISPLAY_TIMEZONE: ${APP_DISPLAY_TIMEZONE:-America/Mexico_City}
+    REDIS_PASSWORD: ${REDIS_PASSWORD}
+    SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
+    SEED_DEMO_PASSWORD: ${SEED_DEMO_PASSWORD}
+    JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-600}
+    REFRESH_TTL: ${REFRESH_TTL:-604800}
+    LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
+    LOGIN_LOCKOUT_MINUTES: ${LOGIN_LOCKOUT_MINUTES:-15}
+    TWO_FACTOR_REQUIRED: ${TWO_FACTOR_REQUIRED:-false}
+    # Credenciales de la bandeja de correos de prueba (la API valida el acceso a /mail/)
+    MAILPIT_UI_USER: ${MAILPIT_UI_USER:-revisor}
+    MAILPIT_UI_PASSWORD: ${MAILPIT_UI_PASSWORD:?Ejecuta make setup}
+    LOG_CHANNEL: stderr
+    DB_CONNECTION: mongodb
+    MONGODB_URI: mongodb://tap_app:${MONGO_APP_PASSWORD}@mongo:27017/tap?authSource=tap
+    MONGODB_DATABASE: tap
+    REDIS_HOST: redis
+    CACHE_STORE: redis
+    QUEUE_CONNECTION: redis
+    SESSION_DRIVER: array
+    MAIL_MAILER: smtp
+    MAIL_HOST: mailpit
+    MAIL_PORT: "1025"
+    MAIL_FROM_ADDRESS: no-reply@tap.test
+    MAIL_FROM_NAME: Sistema de Gestión TAP
+    HASH_DRIVER: argon2id
+  volumes:
+    - jwt-keys:/var/www/html/storage/jwt
+    - photos:/var/www/html/storage/app/private
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  networks: [backend, frontend]
+
+services:
+  mongo:
+    image: mongo:8.0.38-noble
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Ejecuta make setup}
+      MONGO_INITDB_DATABASE: tap
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?Ejecuta make setup}
+    volumes:
+      - mongo-data:/data/db
+      - ./docker/mongo/init-app-user.js:/docker-entrypoint-initdb.d/10-app-user.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [backend]
+
+  redis:
+    image: redis:7.4.12-alpine
+    restart: unless-stopped
+    # volatile-lru: solo expulsa llaves con TTL (caché), nunca la cola de correos
+    command: >
+      redis-server --requirepass ${REDIS_PASSWORD:?Ejecuta make setup}
+      --appendonly yes --maxmemory 256mb --maxmemory-policy volatile-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks: [backend]
+
+  api:
+    <<: *php
+    environment:
+      <<: *php-env
+      CONTAINER_ROLE: api
+    depends_on:
+      mongo: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  worker:
+    <<: *php
+    command: ["php", "artisan", "queue:work", "redis", "--sleep=1", "--tries=3", "--max-time=3600"]
+    environment:
+      <<: *php-env
+      CONTAINER_ROLE: worker
+    healthcheck:
+      disable: true
+    depends_on:
+      api: { condition: service_healthy }
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/nginx/Dockerfile
+    image: tap-prueba/web:latest
+    restart: unless-stopped
+    ports:
+      # Solo localhost: hacia afuera se expone únicamente vía el túnel HTTPS
+      - "127.0.0.1:${WEB_PORT:-8080}:80"
+    depends_on:
+      api: { condition: service_healthy }
+      mailpit: { condition: service_started }
+    networks: [frontend]
+
+  mailpit:
+    image: axllent/mailpit:v1.34.0
+    restart: unless-stopped
+    environment:
+      MP_WEBROOT: /mail/
+      # Sin autenticación básica propia: Nginx protege /mail/ con auth_request contra la API
+      # (pantalla de acceso /correos con el diseño del sistema). Mailpit no se publica al host.
+      MP_MAX_MESSAGES: 500
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+      # Los correos sobreviven a reinicios del contenedor
+      MP_DATABASE: /data/mailpit.db
+    volumes:
+      - mailpit-data:/data
+    networks: [backend, frontend]
+
+  tunnel:
+    image: cloudflare/cloudflared:2026.11.2
+    profiles: ["public"]
+    restart: unless-stopped
+    # Quick Tunnel: URL https://<aleatorio>.trycloudflare.com sin cuenta ni dominio.
+    # OJO: es efímero. Si la conexión se cae varios minutos (Mac suspendida, sin red),
+    # Cloudflare borra el túnel y su subdominio; hay que volver a correr `make public`.
+    command: ["tunnel", "--no-autoupdate", "--metrics", "0.0.0.0:20241", "--url", "http://web:80"]
+    healthcheck:
+      # /ready = al menos una conexión registrada con Cloudflare. Si el túnel murió
+      # ("Tunnel not found") el contenedor queda "unhealthy" en vez de un engañoso "Up".
+      test: ["CMD", "cloudflared", "tunnel", "--metrics", "127.0.0.1:20241", "ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      web: { condition: service_healthy }
+    networks: [frontend]
+
+networks:
+  backend:
+    internal: true   # Mongo y Redis sin salida a internet ni puertos expuestos
+  frontend: {}
+
+volumes:
+  mongo-data:
+  redis-data:
+  jwt-keys:
+  photos:
+  mailpit-data:

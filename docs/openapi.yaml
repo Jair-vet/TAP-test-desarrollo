@@ -1,0 +1,1297 @@
+openapi: 3.1.0
+info:
+  title: API TAP — Prueba técnica (Laravel 11 + MongoDB)
+  version: 1.0.0
+  description: |
+    API REST del sistema de gestión de **productos, usuarios, perfiles y bitácora**.
+
+    ### Autenticación
+    1. `POST /auth/login` → si el usuario **no** tiene 2FA devuelve el `access_token` (JWT EdDSA, 10 min)
+       y deja el *refresh token* en la cookie `tap_rt` (HttpOnly, SameSite=Strict, Path=/api/v1/auth).
+    2. Si tiene 2FA devuelve `status: two_factor_required` + `mfa_token` → `POST /auth/two-factor/challenge`.
+    3. Usa el JWT en `Authorization: Bearer <token>`.
+    4. `POST /auth/refresh` (con la cookie + header `X-Requested-With: XMLHttpRequest`) renueva la sesión.
+
+    ### Permisos
+    Cada endpoint exige `sección:acción` (ej. `products:update`). Secciones: `products`, `users`,
+    `profiles`, `audit`. Acciones: `view`, `create`, `update`, `delete`, `export`.
+    Los permisos efectivos son la unión de los perfiles del usuario.
+
+    ### Errores
+    Todas las respuestas de error tienen la forma `{ message, code, errors?, request_id }`.
+    `request_id` también viaja en el header `X-Request-Id` (útil para buscar en logs).
+
+    ### Fechas
+    ISO-8601 en UTC. El frontend y las exportaciones las muestran como `DD/MM/YYYY HH:MM`.
+  contact:
+    name: Prueba técnica — Área de Desarrollo
+  license:
+    name: Uso exclusivo para evaluación técnica
+servers:
+  - url: /api/v1
+    description: Mismo origen que el frontend (local o túnel de Cloudflare)
+  - url: http://localhost:8080/api/v1
+    description: Docker local
+tags:
+  - name: Sistema
+    description: Estado del servicio.
+  - name: Autenticación
+    description: Login, segundo factor, renovación y cierre de sesión, recuperación y cambio de contraseña.
+  - name: 2FA
+    description: Verificación en dos pasos (TOTP) de la cuenta propia.
+  - name: Inicio
+    description: Tablero con contadores y actividad reciente.
+  - name: Productos
+    description: Consulta, alta, edición, eliminación y exportación de productos.
+  - name: Usuarios
+    description: Consulta, alta (con foto), edición, eliminación y exportación de usuarios.
+  - name: Perfiles
+    description: Perfiles con secciones y acciones que definen los permisos.
+  - name: Bitácora
+    description: Historial de cambios con información anterior y actual.
+  - name: Bandeja de correos
+    description: Herramienta de la demo para ver los correos que envía el sistema (Mailpit).
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      tags: [Sistema]
+      summary: Salud del servicio (MongoDB y Redis)
+      security: []
+      responses:
+        '200':
+          description: Todo en orden
+          content:
+            application/json:
+              example: {status: ok, checks: {mongo: true, redis: true}}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {description: Alguna dependencia no responde}
+
+  # ------------------------------------------------------------------ AUTH
+  /auth/login:
+    post:
+      operationId: postAuthLogin
+      tags: [Autenticación]
+      summary: Iniciar sesión (paso 1)
+      description: |
+        Rate limit: 5/min por correo+IP y 20/min por IP. Tras 5 intentos fallidos la cuenta se bloquea 15 min.
+        Si se ingresa con la contraseña **temporal** (recuperación), `user.must_change_password = true`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LoginInput'}
+            example: {email: admin@tap.test, password: 'TuContraseña#2026'}
+      responses:
+        '200':
+          description: Sesión iniciada o se requiere 2FA
+          headers:
+            Set-Cookie: {$ref: '#/components/headers/RefreshCookie'}
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    oneOf:
+                      - $ref: '#/components/schemas/Session'
+                      - $ref: '#/components/schemas/TwoFactorRequired'
+              examples:
+                sesion: {$ref: '#/components/examples/Session'}
+                dos_pasos:
+                  value: {data: {status: two_factor_required, mfa_token: eyJ0eXAiOiJKV1Qi..., expires_in: 300}}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401':
+          description: Credenciales inválidas o cuenta bloqueada
+          content:
+            application/json:
+              examples:
+                invalidas: {value: {message: Correo o contraseña incorrectos., code: INVALID_CREDENTIALS}}
+                bloqueada: {value: {message: Cuenta bloqueada temporalmente por intentos fallidos., code: ACCOUNT_LOCKED, locked_until: '2026-11-25T20:15:00+00:00'}}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /auth/two-factor/challenge:
+    post:
+      operationId: postAuthTwoFactorChallenge
+      tags: [Autenticación]
+      summary: Completar login con código TOTP o de respaldo (paso 2)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mfa_token]
+              properties:
+                mfa_token: {type: string}
+                code: {type: string, pattern: '^\d{6}$', example: '123456'}
+                recovery_code: {type: string, example: ABCDE-FGHJK}
+      responses:
+        '200':
+          description: Sesión iniciada
+          headers:
+            Set-Cookie: {$ref: '#/components/headers/RefreshCookie'}
+          content:
+            application/json:
+              examples:
+                sesion: {$ref: '#/components/examples/Session'}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401':
+          description: Código inválido, ya usado (anti-replay) o mfa_token vencido
+          content:
+            application/json:
+              example: {message: El código de verificación no es válido., code: INVALID_TWO_FACTOR_CODE}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /auth/refresh:
+    post:
+      operationId: postAuthRefresh
+      tags: [Autenticación]
+      summary: Renovar sesión (rota el refresh token)
+      description: |
+        Usa la cookie `tap_rt`. Cada uso emite un refresh token nuevo; si se presenta uno ya usado
+        (posible robo) se revoca toda la familia → `REFRESH_TOKEN_REUSED`.
+      security:
+        - refreshCookie: []
+      parameters:
+        - in: header
+          name: X-Requested-With
+          required: true
+          schema: {type: string, enum: [XMLHttpRequest]}
+          description: Defensa CSRF adicional a SameSite=Strict
+      responses:
+        '200':
+          description: Nuevo access token
+          content:
+            application/json:
+              examples:
+                sesion: {$ref: '#/components/examples/Session'}
+        '401':
+          description: Refresh inválido, vencido o reusado
+          content:
+            application/json:
+              example: {message: La sesión expiró, vuelve a iniciar sesión., code: INVALID_REFRESH_TOKEN}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /auth/logout:
+    post:
+      operationId: postAuthLogout
+      tags: [Autenticación]
+      summary: Cerrar sesión
+      description: Revoca el JWT (su `jti` queda en la denylist de Redis) y la familia del refresh token. Funciona aunque el token ya haya expirado.
+      security:
+        - bearerAuth: []
+        - refreshCookie: []
+      responses:
+        '204': {description: Sesión cerrada}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /auth/forgot-password:
+    post:
+      operationId: postAuthForgotPassword
+      tags: [Autenticación]
+      summary: Recuperar contraseña
+      description: |
+        Requisito del examen: **valida que el usuario exista** y **envía las credenciales** al correo.
+        Se envía una contraseña temporal (60 min). La actual sigue funcionando hasta que se usa la temporal.
+        Rate limit: 3 cada 15 min por correo, 10/h por IP.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example: {email: almacen@tap.test}
+      responses:
+        '200':
+          description: Correo enviado
+          content:
+            application/json:
+              example: {message: Enviamos una contraseña temporal a tu correo registrado., data: {expires_at: '2026-11-25T21:00:00+00:00'}}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '404':
+          description: El usuario no existe
+          content:
+            application/json:
+              example: {message: No existe un usuario registrado con ese correo., code: USER_NOT_FOUND}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /auth/me:
+    get:
+      operationId: getAuthMe
+      tags: [Autenticación]
+      summary: Usuario autenticado y sus permisos
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/UserDetail'
+                      - type: object
+                        properties:
+                          permissions: {$ref: '#/components/schemas/Permissions'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /auth/password:
+    put:
+      operationId: putAuthPassword
+      tags: [Autenticación]
+      summary: Cambiar contraseña (cierra las demás sesiones y devuelve una nueva)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example: {current_password: 'Actual#2026', password: 'NuevaClave#2026', password_confirmation: 'NuevaClave#2026'}
+      responses:
+        '200':
+          description: Contraseña actualizada + sesión nueva
+          content:
+            application/json:
+              examples:
+                sesion: {$ref: '#/components/examples/Session'}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {description: Contraseña actual incorrecta (INVALID_PASSWORD)}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  # ------------------------------------------------------------------- 2FA
+  /auth/two-factor:
+    get:
+      operationId: getAuthTwoFactor
+      tags: [2FA]
+      summary: Estado del 2FA
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example: {data: {enabled: false, recovery_codes_remaining: 0, enabled_at: null, required: false}}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteAuthTwoFactor
+      tags: [2FA]
+      summary: Desactivar 2FA (contraseña + código vigente)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example: {password: 'TuContraseña#2026', code: '123456'}
+      responses:
+        '200': {description: Desactivado; devuelve una sesión nueva}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {description: Contraseña o código inválidos}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /auth/two-factor/setup:
+    post:
+      operationId: postAuthTwoFactorSetup
+      tags: [2FA]
+      summary: Generar semilla TOTP y QR
+      responses:
+        '200':
+          description: Semilla (guardada cifrada como pendiente) + QR en SVG
+          content:
+            application/json:
+              example: {data: {secret: JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP, otpauth_url: 'otpauth://totp/TAP%20Prueba:admin%40tap.test?secret=...&issuer=TAP%20Prueba', qr_svg: '<svg ...>'}}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '409': {description: Ya está activo (TWO_FACTOR_ALREADY_ENABLED)}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /auth/two-factor/confirm:
+    post:
+      operationId: postAuthTwoFactorConfirm
+      tags: [2FA]
+      summary: Confirmar y activar 2FA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example: {code: '123456'}
+      responses:
+        '200':
+          description: Activado. Devuelve 8 códigos de respaldo (se muestran una sola vez) y una sesión nueva.
+          content:
+            application/json:
+              example: {data: {status: authenticated, access_token: eyJ..., recovery_codes: [ABCDE-FGHJK, LMNPQ-RSTUV], message: Verificación en dos pasos activada.}}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {description: Código inválido}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /auth/two-factor/recovery-codes:
+    post:
+      operationId: postAuthTwoFactorRecoveryCodes
+      tags: [2FA]
+      summary: Regenerar códigos de respaldo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example: {password: 'TuContraseña#2026'}
+      responses:
+        '200':
+          description: Códigos nuevos
+          content:
+            application/json:
+              example: {data: {recovery_codes: [ABCDE-FGHJK, LMNPQ-RSTUV]}}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  # ------------------------------------------------------------- DASHBOARD
+  /dashboard:
+    get:
+      operationId: getDashboard
+      tags: [Inicio]
+      summary: Contadores (solo de secciones permitidas) y actividad reciente
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example: {data: {counts: {products: 36, users: 4, profiles: 4}, recent_activity: []}}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  # -------------------------------------------------------------- PRODUCTS
+  /products:
+    get:
+      operationId: getProducts
+      tags: [Productos]
+      summary: Consulta de productos (paginada, con búsqueda y orden)
+      description: 'Permiso: `products:view`. Búsqueda sin distinguir mayúsculas ni acentos sobre código, nombre y marca.'
+      parameters:
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+        - in: query
+          name: sort
+          schema: {type: string, enum: [code, name, brand, price, created_at], default: created_at}
+        - $ref: '#/components/parameters/Direction'
+      responses:
+        '200':
+          description: Página de productos
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {type: array, items: {$ref: '#/components/schemas/Product'}}
+                  meta: {$ref: '#/components/schemas/PageMeta'}
+        '304': {description: Sin cambios (If-None-Match coincide con el ETag)}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: postProducts
+      tags: [Productos]
+      summary: Alta de producto
+      description: 'Permiso: `products:create`. El código (PRD-000001…) y la fecha de creación se generan automáticamente.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProductInput'}
+            example: {name: Casco de seguridad clase E, brand: 3M, price: 289.90}
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema: {type: object, properties: {data: {$ref: '#/components/schemas/Product'}}}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422':
+          description: Validación (ej. precio con más de 3 dígitos)
+          content:
+            application/json:
+              example: {message: Los datos enviados no son válidos., code: VALIDATION_ERROR, errors: {price: [El precio admite máximo 3 dígitos enteros y 2 decimales (ej. 999.99).]}}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /products/export:
+    get:
+      operationId: getProductsExport
+      tags: [Productos]
+      summary: Descargar listado en PDF o Excel
+      description: 'Permiso: `products:export`. Respeta `search`, `sort` y `direction`.'
+      parameters:
+        - $ref: '#/components/parameters/Format'
+        - $ref: '#/components/parameters/Search'
+      responses:
+        '200': {$ref: '#/components/responses/File'}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /products/{id}:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    get:
+      operationId: getProductsById
+      tags: [Productos]
+      summary: Visualización de producto
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {type: object, properties: {data: {$ref: '#/components/schemas/Product'}}}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: putProductsById
+      tags: [Productos]
+      summary: Edición de producto
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProductInput'}
+      responses:
+        '200': {description: Actualizado (queda en bitácora antes/después)}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteProductsById
+      tags: [Productos]
+      summary: Eliminación de producto
+      responses:
+        '204': {description: Eliminado (la bitácora conserva el snapshot)}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  # ----------------------------------------------------------------- USERS
+  /users:
+    get:
+      operationId: getUsers
+      tags: [Usuarios]
+      summary: Consulta de usuarios
+      parameters:
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+        - in: query
+          name: sort
+          schema: {type: string, enum: [code, email, name, created_at], default: created_at}
+        - $ref: '#/components/parameters/Direction'
+      responses:
+        '200':
+          description: Página de usuarios
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {type: array, items: {$ref: '#/components/schemas/UserSummary'}}
+                  meta: {$ref: '#/components/schemas/PageMeta'}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: postUsers
+      tags: [Usuarios]
+      summary: Alta de usuario (multipart con foto)
+      description: |
+        Permiso: `users:create`. Código automático (USR-000001…), contraseña aleatoria enviada al correo
+        y cambio obligatorio en el primer ingreso. La foto se re-codifica a WebP 512×512 (sin EXIF).
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: {$ref: '#/components/schemas/UserInput'}
+            encoding:
+              photo: {contentType: 'image/jpeg, image/png, image/webp'}
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema: {type: object, properties: {data: {$ref: '#/components/schemas/UserDetail'}}}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409':
+          description: Correo duplicado
+          content:
+            application/json:
+              example: {message: Ya existe un usuario con ese correo., code: EMAIL_TAKEN, field: email}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /users/export:
+    get:
+      operationId: getUsersExport
+      tags: [Usuarios]
+      summary: Descargar listado de usuarios en PDF o Excel
+      parameters:
+        - $ref: '#/components/parameters/Format'
+        - $ref: '#/components/parameters/Search'
+      responses:
+        '200': {$ref: '#/components/responses/File'}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /users/{id}:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    get:
+      operationId: getUsersById
+      tags: [Usuarios]
+      summary: Detalle de usuario (usuario, nombre, teléfono, foto y perfiles)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {type: object, properties: {data: {$ref: '#/components/schemas/UserDetail'}}}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: putUsersById
+      tags: [Usuarios]
+      summary: Edición de usuario (JSON, sin foto)
+      requestBody:
+        content:
+          application/json:
+            example: {name: Laura Pérez, email: laura@tap.test, phone: '+523141234567', profile_ids: [6b0733db25a78435670588b1]}
+      responses:
+        '200': {description: Actualizado}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: postUsersById
+      tags: [Usuarios]
+      summary: Edición de usuario con foto (multipart + `_method=PUT`)
+      description: PHP no procesa multipart en PUT nativo; se usa method spoofing de Laravel.
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/UserInput'
+                - type: object
+                  properties:
+                    _method: {type: string, enum: [PUT]}
+      responses:
+        '200': {description: Actualizado}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteUsersById
+      tags: [Usuarios]
+      summary: Eliminación de usuario (no se puede eliminar a sí mismo)
+      responses:
+        '204': {description: Eliminado}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {description: CANNOT_DELETE_SELF}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /media/users/{id}/photo:
+    get:
+      operationId: getMediaUsersByIdPhoto
+      tags: [Usuarios]
+      summary: Foto de perfil (URL firmada HMAC, sin token)
+      description: La URL completa llega en `photo_url`. Firma inválida o expirada → 404.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - {in: query, name: f, required: true, schema: {type: string}}
+        - {in: query, name: exp, required: true, schema: {type: integer}}
+        - {in: query, name: sig, required: true, schema: {type: string}}
+      responses:
+        '200': {description: image/webp, content: {image/webp: {}}}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '404': {description: Firma inválida/expirada o sin foto}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  # -------------------------------------------------------------- PROFILES
+  /sections:
+    get:
+      operationId: getSections
+      tags: [Perfiles]
+      summary: Catálogo de secciones y acciones asignables
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                data:
+                  - {key: products, label: Productos, actions: [{key: view, label: Consultar}, {key: create, label: Crear}]}
+                  - {key: audit, label: Bitácora, actions: [{key: view, label: Consultar}, {key: export, label: Exportar}]}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /profiles:
+    get:
+      operationId: getProfiles
+      tags: [Perfiles]
+      summary: Consulta de perfiles
+      parameters:
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+        - in: query
+          name: sort
+          schema: {type: string, enum: [code, name, created_at], default: created_at}
+        - $ref: '#/components/parameters/Direction'
+      responses:
+        '200':
+          description: Página de perfiles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {type: array, items: {$ref: '#/components/schemas/Profile'}}
+                  meta: {$ref: '#/components/schemas/PageMeta'}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: postProfiles
+      tags: [Perfiles]
+      summary: Alta de perfil
+      description: Cualquier acción implica `view`. El nombre es único (sin distinguir mayúsculas).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProfileInput'}
+            example: {name: Almacén, description: Gestiona el catálogo, sections: [{section: products, actions: [view, create, update]}]}
+      responses:
+        '201': {description: Creado}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {description: PROFILE_NAME_TAKEN}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /profiles/options:
+    get:
+      operationId: getProfilesOptions
+      tags: [Perfiles]
+      summary: Lista ligera para selects (id, código, nombre) — cacheada
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example: {data: [{id: 6b0733db25a78435670588b1, code: PRF-000001, name: Administrador}]}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /profiles/export:
+    get:
+      operationId: getProfilesExport
+      tags: [Perfiles]
+      summary: Descargar perfiles en PDF o Excel
+      parameters:
+        - $ref: '#/components/parameters/Format'
+        - $ref: '#/components/parameters/Search'
+      responses:
+        '200': {$ref: '#/components/responses/File'}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /profiles/{id}:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    get:
+      operationId: getProfilesById
+      tags: [Perfiles]
+      summary: Detalle del perfil (código, nombre, fecha, secciones, usuarios asignados)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {type: object, properties: {data: {$ref: '#/components/schemas/Profile'}}}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: putProfilesById
+      tags: [Perfiles]
+      summary: Edición de perfil (los permisos de sus usuarios cambian al instante)
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProfileInput'}
+      responses:
+        '200': {description: Actualizado}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteProfilesById
+      tags: [Perfiles]
+      summary: Eliminación de perfil
+      responses:
+        '204': {description: Eliminado}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409':
+          description: Asignado a usuarios
+          content:
+            application/json:
+              example: {message: 'No se puede eliminar: el perfil está asignado a 2 usuario(s). Reasígnalos primero.', code: PROFILE_IN_USE, users_count: 2}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  # ----------------------------------------------------------------- AUDIT
+  /audit-logs:
+    get:
+      operationId: getAuditLogs
+      tags: [Bitácora]
+      summary: Bitácora (quién, qué, cuándo, desde dónde)
+      parameters:
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+        - in: query
+          name: entity_type
+          schema: {type: string, enum: [product, user, profile, auth]}
+        - in: query
+          name: event
+          schema: {type: string, example: updated}
+        - in: query
+          name: entity_id
+          schema: {type: string, pattern: '^[a-f0-9]{24}$'}
+        - in: query
+          name: sort
+          schema: {type: string, enum: [created_at, event, entity_type], default: created_at}
+        - $ref: '#/components/parameters/Direction'
+      responses:
+        '200':
+          description: Página de eventos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {type: array, items: {$ref: '#/components/schemas/AuditSummary'}}
+                  meta: {$ref: '#/components/schemas/PageMeta'}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /audit-logs/catalog:
+    get:
+      operationId: getAuditLogsCatalog
+      tags: [Bitácora]
+      summary: Eventos y entidades para los filtros
+      responses:
+        '200': {description: OK}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /audit-logs/export:
+    get:
+      operationId: getAuditLogsExport
+      tags: [Bitácora]
+      summary: Exportar bitácora (permiso audit:export)
+      parameters:
+        - $ref: '#/components/parameters/Format'
+      responses:
+        '200': {$ref: '#/components/responses/File'}
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /audit-logs/{id}:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    get:
+      operationId: getAuditLogsById
+      tags: [Bitácora]
+      summary: Detalle — información anterior vs actual
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {type: object, properties: {data: {$ref: '#/components/schemas/AuditDetail'}}}
+              example:
+                data:
+                  id: 6b07392f25a78435670588d1
+                  event: updated
+                  event_label: Edición
+                  entity_type: product
+                  entity_code: PRD-000038
+                  actor: {id: 6b0733db25a78435670588b6, code: USR-000001, name: Administrador TAP, email: admin@tap.test}
+                  before: {code: PRD-000038, name: Casco, brand: 3M, price: '120.00'}
+                  after: {code: PRD-000038, name: Casco clase E, brand: 3M, price: '150.00'}
+                  changes:
+                    - {field: name, before: Casco, after: Casco clase E}
+                    - {field: price, before: '120.00', after: '150.00'}
+                  ip: 189.203.10.4
+                  created_at: '2026-11-25T19:42:10+00:00'
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  # ----------------------------------------------------- BANDEJA (DEMO)
+  /mailbox/session:
+    post:
+      operationId: postMailboxSession
+      tags: [Bandeja de correos]
+      summary: Acceso a la bandeja de correos de prueba con usuario y contraseña
+      description: |
+        Entrega la cookie firmada `tap_mail` (HttpOnly, SameSite=Strict, Path=/mail/, 2 h).
+        Nginx protege /mail/ con `auth_request` contra `/mailbox/verify`; sin cookie redirige a /correos.
+        Credenciales: `MAILPIT_UI_USER` / `MAILPIT_UI_PASSWORD` del .env. Rate limit 5/min por IP.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example: {user: revisor, password: 'ClaveDeLaBandeja'}
+      responses:
+        '204':
+          description: Acceso concedido (Set-Cookie tap_mail)
+        '400': {$ref: '#/components/responses/MalformedInput'}
+        '401':
+          description: Credenciales incorrectas
+          content:
+            application/json:
+              example: {message: Usuario o contraseña incorrectos., code: INVALID_CREDENTIALS}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteMailboxSession
+      tags: [Bandeja de correos]
+      summary: Cerrar el acceso a la bandeja (borra la cookie)
+      security: []
+      responses:
+        '204': {description: Acceso cerrado}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /mailbox/session/me:
+    post:
+      operationId: postMailboxSessionMe
+      tags: [Bandeja de correos]
+      summary: Acceso a la bandeja con la sesión actual (permiso users:create)
+      responses:
+        '204': {description: Acceso concedido (Set-Cookie tap_mail)}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /mailbox/verify:
+    get:
+      operationId: getMailboxVerify
+      tags: [Bandeja de correos]
+      summary: Validación de la cookie (la usa Nginx en cada petición a /mail/)
+      security:
+        - mailboxCookie: []
+      responses:
+        '204': {description: Cookie válida}
+        '401': {description: 'Sin cookie, alterada o expirada'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT (EdDSA / Ed25519)
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: tap_rt
+    mailboxCookie:
+      type: apiKey
+      in: cookie
+      name: tap_mail
+
+  headers:
+    RefreshCookie:
+      description: 'tap_rt=<opaco>; Path=/api/v1/auth; HttpOnly; SameSite=Strict; Secure (en HTTPS)'
+      schema: {type: string}
+    ETag:
+      description: Huella del cuerpo; reenvíala en If-None-Match para recibir 304
+      schema: {type: string}
+
+  parameters:
+    Id:
+      in: path
+      name: id
+      required: true
+      schema: {type: string, pattern: '^[a-f0-9]{24}$'}
+      description: ObjectId de MongoDB
+    Search:
+      in: query
+      name: search
+      schema: {type: string, maxLength: 80}
+      description: Texto libre (se escapa; no se aceptan expresiones regulares ni operadores)
+    Page:
+      in: query
+      name: page
+      schema: {type: integer, minimum: 1, default: 1}
+    PerPage:
+      in: query
+      name: per_page
+      schema: {type: integer, enum: [5, 10, 25, 50, 100], default: 10}
+    Direction:
+      in: query
+      name: direction
+      schema: {type: string, enum: [asc, desc], default: desc}
+    Format:
+      in: query
+      name: format
+      required: true
+      schema: {type: string, enum: [pdf, xlsx]}
+
+  responses:
+    Unauthenticated:
+      description: Sin token, token inválido, vencido o revocado
+      content:
+        application/json:
+          example: {message: La sesión expiró., code: TOKEN_EXPIRED}
+    Forbidden:
+      description: El perfil no incluye la sección/acción (o falta cambiar la contraseña)
+      content:
+        application/json:
+          examples:
+            sin_permiso: {value: {message: No tienes permiso para realizar esta acción., code: FORBIDDEN, section: products, action: delete}}
+            cambio_pendiente: {value: {message: Debes cambiar tu contraseña antes de continuar., code: PASSWORD_CHANGE_REQUIRED}}
+    NotFound:
+      description: No existe
+      content:
+        application/json:
+          example: {message: Producto no encontrado., code: NOT_FOUND}
+    ValidationError:
+      description: Datos inválidos
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+          example: {message: Los datos enviados no son válidos., code: VALIDATION_ERROR, errors: {name: [El campo nombre es obligatorio.]}}
+    MalformedInput:
+      description: Se detectaron operadores NoSQL (`$ne`, `$gt`, `$regex`…) en la entrada
+      content:
+        application/json:
+          example: {message: La solicitud contiene caracteres o estructuras no permitidas., code: MALFORMED_INPUT}
+    TooManyRequests:
+      description: Rate limit excedido (ver header Retry-After)
+      content:
+        application/json:
+          example: {message: Demasiadas solicitudes. Intenta más tarde., code: TOO_MANY_REQUESTS}
+    File:
+      description: Archivo para descargar
+      headers:
+        Content-Disposition: {schema: {type: string}, description: 'attachment; filename=productos_20261125_134500.pdf'}
+      content:
+        application/pdf: {}
+        application/vnd.openxmlformats-officedocument.spreadsheetml.sheet: {}
+    InternalError:
+      description: Error interno (se registra con request_id para buscarlo en los logs)
+      content:
+        application/json:
+          example:
+            message: Ocurrió un error interno. Ya quedó registrado.
+            code: INTERNAL_ERROR
+            request_id: 8f0c2e4a-1b2c-4d5e-9f00-112233445566
+
+  examples:
+    Session:
+      value:
+        data:
+          status: authenticated
+          access_token: eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6IjkzZTRkMyJ9...
+          token_type: Bearer
+          expires_in: 600
+          user:
+            id: 6b0733db25a78435670588b6
+            code: USR-000001
+            email: admin@tap.test
+            name: Administrador TAP
+            photo_url: /api/v1/media/users/6b0733db25a78435670588b6/photo?f=...&exp=...&sig=...
+            created_at: '2026-11-25T19:15:39+00:00'
+            must_change_password: false
+            two_factor_enabled: false
+            permissions: {products: [view, create, update, delete, export], users: [view], audit: [view]}
+
+  schemas:
+    Error:
+      type: object
+      required: [message, code]
+      properties:
+        message: {type: string}
+        code: {type: string, example: VALIDATION_ERROR}
+        errors: {type: object, additionalProperties: {type: array, items: {type: string}}}
+        request_id: {type: string, format: uuid}
+    PageMeta:
+      type: object
+      properties:
+        page: {type: integer, example: 1}
+        per_page: {type: integer, example: 10}
+        total: {type: integer, example: 36}
+        last_page: {type: integer, example: 4}
+    LoginInput:
+      type: object
+      required: [email, password]
+      properties:
+        email: {type: string, format: email}
+        password: {type: string, format: password}
+    Permissions:
+      type: object
+      description: sección → acciones
+      additionalProperties: {type: array, items: {type: string, enum: [view, create, update, delete, export]}}
+      example: {products: [view, create], users: [view]}
+    Session:
+      type: object
+      required: [status, access_token]
+      properties:
+        status: {type: string, const: authenticated}
+        access_token: {type: string}
+        token_type: {type: string, const: Bearer}
+        expires_in: {type: integer, example: 600}
+        user:
+          allOf:
+            - $ref: '#/components/schemas/UserSummary'
+            - type: object
+              properties:
+                must_change_password: {type: boolean}
+                two_factor_enabled: {type: boolean}
+                permissions: {$ref: '#/components/schemas/Permissions'}
+    TwoFactorRequired:
+      type: object
+      required: [status, mfa_token]
+      properties:
+        status: {type: string, const: two_factor_required}
+        mfa_token: {type: string}
+        expires_in: {type: integer, example: 300}
+    Product:
+      type: object
+      properties:
+        id: {type: string, example: 6b0733db25a78435670588c1}
+        code: {type: string, example: PRD-000001}
+        name: {type: string, example: Casco de seguridad clase E}
+        brand: {type: string, example: 3M}
+        price: {type: number, example: 289.9, maximum: 999.99}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    ProductInput:
+      type: object
+      required: [name, brand, price]
+      properties:
+        name: {type: string, minLength: 2, maxLength: 120}
+        brand: {type: string, maxLength: 80}
+        price:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 999.99
+          description: 'Máximo 3 dígitos enteros y 2 decimales (regex ^\d{1,3}(\.\d{1,2})?$)'
+    UserSummary:
+      type: object
+      properties:
+        id: {type: string}
+        code: {type: string, example: USR-000001}
+        email: {type: string, format: email, description: Usuario (correo único)}
+        name: {type: string}
+        photo_url: {type: [string, 'null'], description: URL firmada (expira)}
+        created_at: {type: string, format: date-time}
+    UserDetail:
+      allOf:
+        - $ref: '#/components/schemas/UserSummary'
+        - type: object
+          properties:
+            phone: {type: [string, 'null'], example: '+523141234567'}
+            profiles:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: {type: string}
+                  code: {type: string}
+                  name: {type: string}
+            two_factor_enabled: {type: boolean}
+            must_change_password: {type: boolean}
+            last_login_at: {type: [string, 'null'], format: date-time}
+            updated_at: {type: string, format: date-time}
+    UserInput:
+      type: object
+      required: [name, email, photo]
+      properties:
+        name: {type: string, minLength: 3, maxLength: 120}
+        email: {type: string, format: email, description: Único (sin distinguir mayúsculas)}
+        phone: {type: string, description: 'Opcional, con código de país: +52 314 123 4567', example: '+52 314 123 4567'}
+        photo: {type: string, format: binary, description: 'JPG/PNG/WebP, máx. 2 MB, mín. 64×64. Obligatoria en alta.'}
+        'profile_ids[]': {type: array, items: {type: string}}
+    Profile:
+      type: object
+      properties:
+        id: {type: string}
+        code: {type: string, example: PRF-000001}
+        name: {type: string, example: Administrador}
+        description: {type: [string, 'null']}
+        sections:
+          type: array
+          items:
+            type: object
+            properties:
+              key: {type: string, enum: [products, users, profiles, audit]}
+              label: {type: string}
+              actions: {type: array, items: {type: string}}
+        users_count: {type: integer, description: Solo en el detalle}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    ProfileInput:
+      type: object
+      required: [name, sections]
+      properties:
+        name: {type: string, minLength: 3, maxLength: 60}
+        description: {type: [string, 'null'], maxLength: 255}
+        sections:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [section, actions]
+            properties:
+              section: {type: string, enum: [products, users, profiles, audit]}
+              actions: {type: array, minItems: 1, items: {type: string, enum: [view, create, update, delete, export]}}
+    AuditSummary:
+      type: object
+      properties:
+        id: {type: string}
+        event: {type: string, example: updated}
+        event_label: {type: string, example: Edición}
+        entity_type: {type: string, example: product}
+        entity_label: {type: string, example: Producto}
+        entity_id: {type: [string, 'null']}
+        entity_code: {type: [string, 'null'], example: PRD-000001}
+        actor:
+          type: object
+          properties:
+            id: {type: [string, 'null']}
+            code: {type: [string, 'null']}
+            name: {type: string}
+            email: {type: [string, 'null']}
+        changes_count: {type: integer}
+        ip: {type: [string, 'null']}
+        created_at: {type: string, format: date-time}
+    AuditDetail:
+      allOf:
+        - $ref: '#/components/schemas/AuditSummary'
+        - type: object
+          properties:
+            before: {type: [object, 'null'], description: Información anterior (snapshot)}
+            after: {type: [object, 'null'], description: Información actual (snapshot)}
+            changes:
+              type: array
+              items:
+                type: object
+                properties:
+                  field: {type: string}
+                  before: {}
+                  after: {}
+            meta: {type: [object, 'null']}
+            user_agent: {type: [string, 'null']}

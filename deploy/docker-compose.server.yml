@@ -1,0 +1,38 @@
+# =============================================================================
+# Override para un SERVIDOR (VPS): se usa junto con docker-compose.yml
+#
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.server.yml up -d --build
+#
+# Cambios respecto a local:
+#  - Caddy delante de Nginx: HTTPS automático (Let's Encrypt) para PUBLIC_HOST,
+#    p. ej. tap-prueba.duckdns.org. URL fija, a diferencia del Quick Tunnel.
+#  - El puerto 8080 deja de publicarse: solo entran 80/443 por Caddy.
+#  - MongoDB con caché acotada (servidores pequeños).
+# =============================================================================
+services:
+  web:
+    ports: !reset []
+
+  mongo:
+    command: ["--wiredTigerCacheSizeGB", "0.5"]
+
+  caddy:
+    image: caddy:2.11.9-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?Falta PUBLIC_HOST (ej. tap-prueba.duckdns.org)}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data        # certificados: persisten entre reinicios
+      - caddy-config:/config
+    depends_on:
+      web: { condition: service_healthy }
+    networks: [frontend]
+
+volumes:
+  caddy-data:
+  caddy-config:

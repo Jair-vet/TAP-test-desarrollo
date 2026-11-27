@@ -1,0 +1,105 @@
+# =============================================================================
+# CD — Entrega continua.
+#
+#  Se dispara SOLO cuando el workflow "CI" terminó en verde sobre main, o al
+#  publicar un tag v*. Así nunca se publica una imagen que no pasó las pruebas.
+#
+#   1. Construye las imágenes api (PHP-FPM) y web (Nginx + Angular) para
+#      linux/amd64 y linux/arm64 (Intel, AMD, Apple Silicon, Graviton/Ampere).
+#   2. Las publica en GitHub Container Registry:
+#        ghcr.io/<dueño>/tap-prueba-api:<sha|latest|vX.Y.Z>
+#        ghcr.io/<dueño>/tap-prueba-web:<sha|latest|vX.Y.Z>
+#      con SBOM y procedencia (supply-chain).
+#   3. Con tag v*: crea un GitHub Release con openapi.yaml y la colección de Postman.
+#
+# Para usar las imágenes publicadas en cualquier equipo con Docker basta con
+# cambiar `build:` por `image: ghcr.io/...` en docker-compose.yml (ver docs/CI-CD.md).
+# =============================================================================
+name: CD
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write    # crear releases
+  packages: write    # publicar en ghcr.io (incluye SBOM y procedencia de buildx)
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  images:
+    name: Publicar imágenes (${{ matrix.name }})
+    if: github.event_name == 'push' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: api
+            dockerfile: docker/php/Dockerfile
+            target: prod
+          - name: web
+            dockerfile: docker/nginx/Dockerfile
+            target: ''
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/tap-prueba-${{ matrix.name }}
+          tags: |
+            type=sha,prefix=,format=short
+            type=raw,value=latest,enable=${{ github.event_name == 'workflow_run' }}
+            type=semver,pattern={{version}}
+
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  release:
+    name: GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Crear release con la documentación de la API
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            docs/openapi.yaml \
+            docs/postman/TAP-Prueba.postman_collection.json \
+            docs/postman/TAP-Local.postman_environment.json \
+            --title "Prueba técnica TAP $TAG" \
+            --notes "Imágenes: ghcr.io/${GITHUB_REPOSITORY_OWNER}/tap-prueba-api:${TAG#v} y tap-prueba-web:${TAG#v}. Ver README.md para levantar el sistema con Docker."

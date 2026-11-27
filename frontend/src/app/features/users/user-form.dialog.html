@@ -1,0 +1,99 @@
+<app-modal [title]="user ? 'Editar usuario' : 'Nuevo usuario'"
+  [subtitle]="user ? user.code : 'La contraseña se genera y se envía por correo'"
+  [icon]="user ? 'user-cog' : 'user-round'">
+  <form id="user-form" [formGroup]="form" (ngSubmit)="save()" class="space-y-5" novalidate>
+
+    <!-- Foto de perfil (arrastrar o elegir) -->
+    <div>
+      <span class="label">Foto de perfil @if (!user) { <span class="text-red-500">*</span> }</span>
+      <label
+        class="group flex cursor-pointer items-center gap-4 rounded-2xl border-2 border-dashed p-4 transition-all duration-200"
+        [class]="dragging()
+          ? 'border-brand-500 bg-brand-50 dark:bg-brand-400/10'
+          : 'border-zinc-300 hover:border-brand-400 hover:bg-zinc-50 dark:border-white/10 dark:hover:bg-white/[0.03]'"
+        (dragover)="$event.preventDefault(); dragging.set(true)" (dragleave)="dragging.set(false)" (drop)="onDrop($event)">
+        <div class="relative h-20 w-20 shrink-0">
+          @if (preview()) {
+            <img [src]="preview()" alt="Vista previa" class="h-20 w-20 rounded-full object-cover ring-4 ring-brand-400/30 animate-scale-in" />
+          } @else {
+            <div class="grid h-20 w-20 place-items-center rounded-full bg-zinc-100 text-zinc-400 dark:bg-white/5">
+              <app-icon name="camera" [size]="26" />
+            </div>
+          }
+        </div>
+        <div class="text-sm">
+          <p class="font-semibold text-zinc-800 dark:text-zinc-100">
+            <span class="text-brand-700 group-hover:underline dark:text-brand-400">Elige una imagen</span> o arrástrala aquí
+          </p>
+          <p class="mt-0.5 text-xs text-zinc-500">JPG, PNG o WebP · máximo 2 MB. Se recorta y optimiza automáticamente.</p>
+        </div>
+        <input type="file" class="sr-only" accept="image/jpeg,image/png,image/webp" (change)="onFileSelected($event)" />
+      </label>
+      <app-form-error [control]="form.controls.photo" />
+    </div>
+
+    <div class="grid gap-5 sm:grid-cols-2">
+      <div>
+        <label class="label" for="name">Nombre <span class="text-red-500">*</span></label>
+        <input id="name" cdkFocusInitial class="input" formControlName="name" maxlength="120" placeholder="Nombre completo" autocomplete="name" />
+        <app-form-error [control]="form.controls.name" />
+      </div>
+      <div>
+        <label class="label" for="email">Usuario (correo) <span class="text-red-500">*</span></label>
+        <input id="email" type="email" class="input" formControlName="email" maxlength="150" placeholder="usuario@empresa.com" autocomplete="email" />
+        <app-form-error [control]="form.controls.email" />
+      </div>
+    </div>
+
+    <div>
+      <label class="label" for="phone">Teléfono <span class="font-normal text-zinc-400">(opcional, con código de país)</span></label>
+      <div class="flex gap-2">
+        <select class="input w-40 shrink-0 pr-2" formControlName="country" (change)="formatPhone()" aria-label="País">
+          @for (c of countries; track c.code) {
+            <option [value]="c.code">{{ c.flag }} {{ c.dial }} · {{ c.name }}</option>
+          }
+        </select>
+        <div class="relative flex-1">
+          <app-icon name="phone" [size]="16" class="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-400" />
+          <input id="phone" type="tel" class="input pl-10" formControlName="phone" placeholder="314 123 4567" (input)="formatPhone()" autocomplete="tel-national" />
+        </div>
+      </div>
+      <app-form-error [control]="form.controls.phone" />
+    </div>
+
+    <div>
+      <span class="label">Perfiles</span>
+      <p class="hint -mt-1 mb-2">Los perfiles definen a qué secciones puede entrar.</p>
+      <div class="flex flex-wrap gap-2">
+        @for (p of profiles(); track p.id) {
+          @let selected = form.controls.profile_ids.value.includes(p.id);
+          <button type="button" (click)="toggleProfile(p.id)" [attr.aria-pressed]="selected"
+            class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition-all duration-200 active:scale-95"
+            [class]="selected
+              ? 'border-ink-950 bg-ink-950 text-brand-400 dark:border-brand-400 dark:bg-brand-400 dark:text-ink-950'
+              : 'border-zinc-300 text-zinc-600 hover:border-zinc-400 dark:border-white/10 dark:text-zinc-300'">
+            <app-icon [name]="selected ? 'circle-check' : 'plus'" [size]="14" />
+            {{ p.name }}
+          </button>
+        } @empty {
+          <p class="text-sm text-zinc-400">Cargando perfiles…</p>
+        }
+      </div>
+      <app-form-error [control]="form.controls.profile_ids" />
+    </div>
+
+    @if (error()) {
+      <div class="flex items-center gap-2 rounded-xl bg-red-50 p-3 text-sm text-red-700 animate-fade-in dark:bg-red-500/10 dark:text-red-300" role="alert">
+        <app-icon name="circle-exclamation-point" [size]="17" /> {{ error() }}
+      </div>
+    }
+  </form>
+
+  <app-modal-footer>
+    <button type="button" class="btn btn-outline" (click)="ref.close()">Cancelar</button>
+    <button type="submit" form="user-form" class="btn btn-primary" [disabled]="saving()">
+      @if (saving()) { <app-icon name="loader" [size]="16" class="animate-spin" /> Guardando… }
+      @else { <app-icon name="circle-check" [size]="16" /> {{ user ? 'Guardar cambios' : 'Crear y enviar credenciales' }} }
+    </button>
+  </app-modal-footer>
+</app-modal>

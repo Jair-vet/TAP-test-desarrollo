@@ -1,0 +1,8 @@
+# Caddy: HTTPS automático con Let's Encrypt para el dominio público.
+# Caddy agrega X-Forwarded-For / X-Forwarded-Proto: Nginx y Laravel los usan
+# para la IP real del cliente, HSTS y la cookie Secure.
+{$PUBLIC_HOST} {
+	encode zstd gzip
+	reverse_proxy web:80
+	header -Server
+}

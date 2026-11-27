@@ -1,0 +1,80 @@
+<app-page-header eyebrow="Administración" title="Usuarios" subtitle="Cuentas con acceso al sistema y sus perfiles. Toca una fila para ver el detalle.">
+  <app-export-menu *appCan="'users:export'" resource="users" [params]="list.params()" />
+  <button *appCan="'users:create'" type="button" class="btn btn-primary" (click)="create()">
+    <app-icon name="plus" [size]="17" /> Nuevo usuario
+  </button>
+</app-page-header>
+
+<section class="card overflow-hidden animate-fade-up" style="animation-delay: 60ms">
+  <div class="flex flex-col gap-3 border-b border-zinc-100 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-white/[0.07]">
+    <app-search-input [value]="list.search()" (valueChange)="list.setSearch($event)" placeholder="Buscar por código, correo o nombre…" />
+    <div class="flex items-center gap-3 text-xs text-zinc-400">
+      @if (list.loading()) {
+        <span class="flex items-center gap-2 animate-fade-in"><app-icon name="loader" [size]="14" class="animate-spin" /> Cargando…</span>
+      } @else if (list.meta()) {
+        <span class="animate-fade-in">{{ list.meta()?.total }} usuario(s)</span>
+      }
+    </div>
+  </div>
+
+  <div class="table-wrap table-scroll" style="--table-offset: 23rem">
+    <table class="table table-responsive">
+      <thead>
+        <tr>
+          <th appSortHeader="code" [sort]="list.sort()" [direction]="list.direction()" (sortChange)="list.toggleSort($event)">Código</th>
+          <th appSortHeader="email" [sort]="list.sort()" [direction]="list.direction()" (sortChange)="list.toggleSort($event)">Usuario</th>
+          <th appSortHeader="name" [sort]="list.sort()" [direction]="list.direction()" (sortChange)="list.toggleSort($event)">Nombre</th>
+          <th appSortHeader="created_at" [sort]="list.sort()" [direction]="list.direction()" (sortChange)="list.toggleSort($event)">Fecha de creación</th>
+          <th class="w-px !text-right">Acciones</th>
+        </tr>
+      </thead>
+
+      @if (list.loading() && list.items().length === 0) {
+        <tbody [appTableSkeleton]="6" [cols]="5"></tbody>
+      } @else {
+        <tbody [class.opacity-60]="list.loading()" class="transition-opacity duration-200">
+          @for (u of list.items(); track u.id; let i = $index) {
+            <tr class="row-enter row-click" [style.--i]="i" tabindex="0" (click)="detail(u)" (keydown.enter)="detail(u)"
+              [attr.aria-label]="'Ver detalle de ' + u.name">
+              <td data-label="Código"><span class="code-chip">{{ u.code }}</span></td>
+              <td data-label="Usuario" class="text-zinc-700 dark:text-zinc-300">{{ u.email }}</td>
+              <td data-label="Nombre">
+                <div class="flex items-center justify-end gap-3 md:justify-start">
+                  <app-avatar [src]="u.photo_url" [name]="u.name" [size]="34" />
+                  <span class="font-medium text-zinc-900 dark:text-zinc-100">{{ u.name }}</span>
+                  @if (u.id === store.user()?.id) { <span class="badge badge-brand">Tú</span> }
+                </div>
+              </td>
+              <td data-label="Creado" class="whitespace-nowrap tabular-nums text-zinc-600 dark:text-zinc-400">{{ u.created_at | appDate }}</td>
+              <td class="cell-actions" (click)="$event.stopPropagation()" (keydown.enter)="$event.stopPropagation()">
+                <div class="flex justify-end gap-1">
+                  <button type="button" class="btn btn-ghost btn-icon hover:!text-sky-600" (click)="detail(u)" title="Detalle de usuario" aria-label="Detalle de usuario">
+                    <app-icon name="eye" [size]="17" />
+                  </button>
+                  <button *appCan="'users:update'" type="button" class="btn btn-ghost btn-icon hover:!text-amber-600" (click)="edit(u)" title="Editar" aria-label="Editar">
+                    <app-icon name="pencil" [size]="17" />
+                  </button>
+                  @if (u.id !== store.user()?.id) {
+                    <button *appCan="'users:delete'" type="button" class="btn btn-ghost btn-icon hover:!bg-red-50 hover:!text-red-600 dark:hover:!bg-red-500/10" (click)="remove(u)" title="Eliminar" aria-label="Eliminar">
+                      <app-icon name="trash" [size]="17" />
+                    </button>
+                  }
+                </div>
+              </td>
+            </tr>
+          }
+        </tbody>
+      }
+    </table>
+
+    @if (!list.loading() && list.failed()) {
+      <app-empty-state icon="circle-x" tone="error" title="No se pudo cargar el listado" actionLabel="Reintentar" (action)="list.reload()" />
+    } @else if (!list.loading() && list.items().length === 0) {
+      <app-empty-state icon="users" title="Sin usuarios" [message]="list.search() ? 'No hay coincidencias con tu búsqueda.' : 'Registra el primero.'" />
+    }
+  </div>
+
+  <div class="border-t border-zinc-100 dark:border-white/[0.07]">
+    <app-paginator [meta]="list.meta()" (pageChange)="list.page.set($event)" (perPageChange)="list.setPerPage($event)" />
+  </div>
+</section>

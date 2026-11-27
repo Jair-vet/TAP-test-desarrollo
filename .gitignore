@@ -1,0 +1,10 @@
+.env
+.DS_Store
+node_modules/
+*.log
+.angular/
+.tunnel-caffeinate.pid
+.env.seed
+
+# Reportes de pruebas (Newman/JUnit)
+reports/

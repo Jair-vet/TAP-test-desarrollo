@@ -1,0 +1,99 @@
+<app-page-header eyebrow="Administración" title="Perfiles de usuarios" subtitle="Cada perfil define a qué secciones entra un usuario y qué puede hacer en ellas.">
+  <app-export-menu *appCan="'profiles:export'" resource="profiles" [params]="list.params()" />
+  <button *appCan="'profiles:create'" type="button" class="btn btn-primary" (click)="create()">
+    <app-icon name="plus" [size]="17" /> Nuevo perfil
+  </button>
+</app-page-header>
+
+<!-- Leyenda de colores por sección -->
+<div class="mb-4 flex flex-wrap items-center gap-2 animate-fade-up" style="animation-delay: 40ms">
+  <span class="mr-1 text-xs font-medium text-zinc-500 dark:text-zinc-400">Secciones:</span>
+  @for (s of sections; track s.key) {
+    <span class="tone-chip" [class]="s.meta.tone"><app-icon [name]="s.meta.icon" [size]="13" /> {{ s.meta.label }}</span>
+  }
+</div>
+
+<section class="card overflow-hidden animate-fade-up" style="animation-delay: 80ms">
+  <div class="flex flex-col gap-3 border-b border-zinc-100 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-white/[0.07]">
+    <app-search-input [value]="list.search()" (valueChange)="list.setSearch($event)" placeholder="Buscar por código o nombre…" />
+    <div class="flex items-center gap-3 text-xs text-zinc-400">
+      @if (list.loading()) {
+        <span class="flex items-center gap-2 animate-fade-in"><app-icon name="loader" [size]="14" class="animate-spin" /> Cargando…</span>
+      } @else if (list.meta()) {
+        <span class="animate-fade-in">{{ list.meta()?.total }} perfil(es)</span>
+      }
+    </div>
+  </div>
+
+  <div class="table-wrap table-scroll" style="--table-offset: 25.5rem">
+    <table class="table table-responsive">
+      <thead>
+        <tr>
+          <th appSortHeader="code" [sort]="list.sort()" [direction]="list.direction()" (sortChange)="list.toggleSort($event)">Código de perfil</th>
+          <th appSortHeader="name" [sort]="list.sort()" [direction]="list.direction()" (sortChange)="list.toggleSort($event)">Nombre</th>
+          <th>Secciones</th>
+          <th appSortHeader="created_at" [sort]="list.sort()" [direction]="list.direction()" (sortChange)="list.toggleSort($event)">Fecha de creación</th>
+          <th class="w-px !text-right">Acciones</th>
+        </tr>
+      </thead>
+
+      @if (list.loading() && list.items().length === 0) {
+        <tbody [appTableSkeleton]="4" [cols]="5"></tbody>
+      } @else {
+        <tbody [class.opacity-60]="list.loading()" class="transition-opacity duration-200">
+          @for (p of list.items(); track p.id; let i = $index) {
+            <tr class="row-enter row-click" [style.--i]="i" tabindex="0" (click)="detail(p)" (keydown.enter)="detail(p)"
+              [attr.aria-label]="'Ver detalle del perfil ' + p.name">
+              <td data-label="Código"><span class="code-chip">{{ p.code }}</span></td>
+              <td data-label="Nombre">
+                <div class="flex items-center justify-end gap-3 md:justify-start">
+                  <span class="tone-tile hidden h-9 w-9 shrink-0 md:grid" [class]="p.sections.length > 1 ? 'tone-profiles' : meta(p.sections[0].key).tone">
+                    <app-icon name="shield-check" [size]="17" />
+                  </span>
+                  <div class="min-w-0">
+                    <p class="font-medium text-zinc-900 dark:text-zinc-100">{{ p.name }}</p>
+                    @if (p.description) { <p class="max-w-xs truncate text-xs text-zinc-500">{{ p.description }}</p> }
+                  </div>
+                </div>
+              </td>
+              <td data-label="Secciones">
+                <div class="flex flex-wrap justify-end gap-1.5 md:justify-start">
+                  @for (s of p.sections; track s.key) {
+                    <span class="tone-chip" [class]="meta(s.key).tone" [title]="s.actions.length + ' acción(es)'">
+                      <app-icon [name]="meta(s.key).icon" [size]="12" /> {{ s.label }}
+                      <span class="rounded-full bg-white/60 px-1.5 text-[10px] font-bold dark:bg-black/20">{{ s.actions.length }}</span>
+                    </span>
+                  }
+                </div>
+              </td>
+              <td data-label="Creado" class="whitespace-nowrap tabular-nums text-zinc-600 dark:text-zinc-400">{{ p.created_at | appDate }}</td>
+              <td class="cell-actions" (click)="$event.stopPropagation()" (keydown.enter)="$event.stopPropagation()">
+                <div class="flex justify-end gap-1">
+                  <button type="button" class="btn btn-ghost btn-icon hover:!text-sky-600" (click)="detail(p)" title="Detalle del perfil" aria-label="Detalle del perfil">
+                    <app-icon name="eye" [size]="17" />
+                  </button>
+                  <button *appCan="'profiles:update'" type="button" class="btn btn-ghost btn-icon hover:!text-amber-600" (click)="edit(p)" title="Editar" aria-label="Editar">
+                    <app-icon name="pencil" [size]="17" />
+                  </button>
+                  <button *appCan="'profiles:delete'" type="button" class="btn btn-ghost btn-icon hover:!bg-red-50 hover:!text-red-600 dark:hover:!bg-red-500/10" (click)="remove(p)" title="Eliminar" aria-label="Eliminar">
+                    <app-icon name="trash" [size]="17" />
+                  </button>
+                </div>
+              </td>
+            </tr>
+          }
+        </tbody>
+      }
+    </table>
+
+    @if (!list.loading() && list.failed()) {
+      <app-empty-state icon="circle-x" tone="error" title="No se pudo cargar el listado" actionLabel="Reintentar" (action)="list.reload()" />
+    } @else if (!list.loading() && list.items().length === 0) {
+      <app-empty-state icon="shield-check" title="Sin perfiles" message="No hay perfiles que coincidan." />
+    }
+  </div>
+
+  <div class="border-t border-zinc-100 dark:border-white/[0.07]">
+    <app-paginator [meta]="list.meta()" (pageChange)="list.page.set($event)" (perPageChange)="list.setPerPage($event)" />
+  </div>
+</section>

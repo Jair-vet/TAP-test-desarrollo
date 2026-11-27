@@ -1,0 +1,90 @@
+@if (step() === 'credentials') {
+  <app-auth-layout title="Bienvenido de vuelta" subtitle="Ingresa con tu correo y contraseña.">
+    @if (expired()) {
+      <div class="mb-5 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 animate-fade-in dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+        <app-icon name="clock" [size]="17" class="mt-0.5" /> Tu sesión expiró. Vuelve a iniciar sesión.
+      </div>
+    }
+
+    <form [formGroup]="form" (ngSubmit)="submitCredentials()" class="space-y-5" novalidate>
+      <div>
+        <label class="label" for="email">Correo electrónico</label>
+        <div class="relative">
+          <app-icon name="mail" [size]="17" class="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-400" />
+          <input id="email" type="email" class="input pl-10" formControlName="email" autocomplete="username" placeholder="tu@correo.com" />
+        </div>
+        <app-form-error [control]="form.controls.email" />
+      </div>
+
+      <div>
+        <div class="mb-1.5 flex items-center justify-between">
+          <label class="label mb-0" for="password">Contraseña</label>
+          <a routerLink="/recuperar-contrasena" class="text-xs font-semibold text-brand-700 hover:underline dark:text-brand-400">¿La olvidaste?</a>
+        </div>
+        <div class="relative">
+          <app-icon name="lock" [size]="17" class="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-400" />
+          <input id="password" [type]="showPassword() ? 'text' : 'password'" class="input pl-10 pr-11" formControlName="password" autocomplete="current-password" placeholder="••••••••••" />
+          <button type="button" class="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-zinc-400 transition hover:text-zinc-700 dark:hover:text-zinc-200"
+            (click)="showPassword.set(!showPassword())" [attr.aria-label]="showPassword() ? 'Ocultar contraseña' : 'Mostrar contraseña'">
+            <app-icon [name]="showPassword() ? 'eye-off' : 'eye'" [size]="17" />
+          </button>
+        </div>
+        <app-form-error [control]="form.controls.password" />
+      </div>
+
+      @if (error()) {
+        <div class="flex items-start gap-2 rounded-xl bg-red-50 p-3 text-sm text-red-700 animate-fade-in dark:bg-red-500/10 dark:text-red-300" role="alert">
+          <app-icon name="circle-exclamation-point" [size]="17" class="mt-0.5" />
+          <div>
+            {{ error() }}
+            @if (lockedUntil()) { <span class="block text-xs opacity-80">Podrás intentar de nuevo a las {{ lockedUntil() | appDate }}.</span> }
+          </div>
+        </div>
+      }
+
+      <button type="submit" class="btn btn-dark h-11 w-full" [disabled]="loading()">
+        @if (loading()) { <app-icon name="loader" [size]="17" class="animate-spin" /> Verificando… }
+        @else { Iniciar sesión <app-icon name="arrow-right" [size]="17" /> }
+      </button>
+    </form>
+
+    <p class="mt-8 flex items-center justify-center gap-1.5 text-xs text-zinc-400">
+      <app-icon name="shield-check" [size]="14" /> Conexión protegida · sesión con JWT y 2FA
+    </p>
+  </app-auth-layout>
+} @else {
+  <app-auth-layout title="Verificación en dos pasos" subtitle="Abre tu app autenticadora (Google/Microsoft Authenticator, Authy…) e ingresa el código.">
+    <form [formGroup]="codeForm" (ngSubmit)="submitCode()" class="space-y-5" novalidate>
+      @if (!useRecovery()) {
+        <div class="animate-fade-in">
+          <label class="label" for="code">Código de 6 dígitos</label>
+          <input id="code" class="input h-14 text-center font-mono text-2xl tracking-[0.5em]" formControlName="code"
+            inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" (input)="onCodeInput()" />
+        </div>
+      } @else {
+        <div class="animate-fade-in">
+          <label class="label" for="recovery">Código de respaldo</label>
+          <input id="recovery" class="input h-12 text-center font-mono uppercase tracking-widest" formControlName="recovery" placeholder="XXXXX-XXXXX" autocomplete="off" />
+          <p class="hint">Cada código de respaldo solo funciona una vez.</p>
+        </div>
+      }
+
+      @if (error()) {
+        <div class="flex items-center gap-2 rounded-xl bg-red-50 p-3 text-sm text-red-700 animate-fade-in dark:bg-red-500/10 dark:text-red-300" role="alert">
+          <app-icon name="circle-exclamation-point" [size]="17" /> {{ error() }}
+        </div>
+      }
+
+      <button type="submit" class="btn btn-dark h-11 w-full" [disabled]="loading()">
+        @if (loading()) { <app-icon name="loader" [size]="17" class="animate-spin" /> Verificando… } @else { Verificar }
+      </button>
+
+      <div class="flex items-center justify-between text-sm">
+        <button type="button" class="font-medium text-zinc-500 hover:text-zinc-900 dark:hover:text-white" (click)="backToCredentials()">← Volver</button>
+        <button type="button" class="font-semibold text-brand-700 hover:underline dark:text-brand-400" (click)="useRecovery.set(!useRecovery()); error.set(null)">
+          {{ useRecovery() ? 'Usar código de la app' : 'Usar código de respaldo' }}
+        </button>
+      </div>
+    </form>
+  </app-auth-layout>
+}
