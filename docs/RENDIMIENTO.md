@@ -24,7 +24,7 @@ local y falla el CI. No depende de que alguien "se acuerde" de revisarlo.
 | Lighthouse (login): rendimiento · accesibilidad · buenas prácticas | **100 · 100 · 96** | ≥ 90 |
 | Lighthouse: FCP · LCP · TBT · CLS | **0.2 s · 0.2 s · 0 ms · 0** | 1.8 s · 2.5 s · 200 ms · 0.1 |
 | Bundle inicial | 660 kB (128 kB comprimido) | 700 kB aviso / 1 MB error |
-| Consultas con COLLSCAN | **0** (antes de esta regla había 26: ver §6) | 0 |
+| Consultas con COLLSCAN | **0** (antes de esta regla había 27: ver §6) | 0 |
 
 Los reportes completos quedan en `reports/` (`k6-summary.json`, `lighthouse/*.html`) y el CI los sube como
 artefacto `reportes-e2e-y-rendimiento`.
